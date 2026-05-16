@@ -74,9 +74,13 @@ jobs:
           echo "Cleanup..."
           rm -rf ffmpeg-*/ UnityCapture-master/ ffmpeg.zip driver.zip
 
+      - name: Install NSIS
+        run: choco install nsis -y
+
       - name: Build Windows Installer
         shell: pwsh
         run: |
+          $env:PATH += ";C:\Program Files (x86)\NSIS"
           ./scripts/build-windows.ps1
 
       - name: Upload Artifacts
@@ -103,7 +107,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            RTSPVirtualCamAgent-x86_64.AppImage
-            SYG RTSP Virtual Cam Agent-Setup.exe
+            all-artifacts/RTSPVirtualCamAgent-x86_64.AppImage
+            all-artifacts/*.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
