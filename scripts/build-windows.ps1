@@ -30,7 +30,9 @@ try {
   $Makensis = Get-Command makensis -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
   if (-not $Makensis) {
     $CommonPaths = @(
+      "C:\Program Files (x86)\NSIS\Bin\makensis.exe",
       "C:\Program Files (x86)\NSIS\makensis.exe",
+      "C:\Program Files\NSIS\Bin\makensis.exe",
       "C:\Program Files\NSIS\makensis.exe"
     )
     foreach ($Path in $CommonPaths) {
