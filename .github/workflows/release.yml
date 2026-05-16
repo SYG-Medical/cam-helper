@@ -25,7 +25,12 @@ jobs:
           sudo apt-get install -y libx11-dev libxcursor-dev libxrandr-dev libxinerama-dev libxi-dev libgl1-mesa-dev xorg-dev
 
       - name: Build AppImage
-        run: make package-linux
+        run: |
+          mkdir -p internal/assets/third_party/ffmpeg
+          mkdir -p internal/assets/third_party/driver
+          touch internal/assets/third_party/ffmpeg/placeholder.txt
+          touch internal/assets/third_party/driver/placeholder.txt
+          make package-linux
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
@@ -46,21 +51,26 @@ jobs:
           go-version: '1.22'
           cache: true
 
+      - name: Download FFmpeg and UnityCapture
+        shell: bash
+        run: |
+          mkdir -p internal/assets/third_party/ffmpeg
+          mkdir -p internal/assets/third_party/driver
+          
+          curl -L https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip -o ffmpeg.zip
+          unzip ffmpeg.zip
+          mv ffmpeg-*/bin/ffmpeg.exe internal/assets/third_party/ffmpeg/
+          
+          curl -L "https://github.com/schellingb/UnityCapture/releases/download/v1.0.1/UnityCapture.zip" -o driver.zip
+          unzip driver.zip
+          cp UnityCapture/UnityCaptureFilter64.dll internal/assets/third_party/driver/virtual-camera-installer.dll
+          cp UnityCapture/Install.bat internal/assets/third_party/driver/install.bat
+          touch internal/assets/third_party/driver/virtual-camera-bridge.exe
+
       - name: Build Standalone EXE
         run: |
           mkdir -p dist
           go build -trimpath -ldflags="-H=windowsgui -s -w" -o dist/rtsp-virtual-cam-agent.exe ./cmd/app
-        shell: bash
-
-      - name: Build Installer (Optional)
-        run: |
-          # Only run makensis if the binaries are present, otherwise it will likely fail
-          if [ -f "internal/assets/third_party/ffmpeg/ffmpeg.exe" ]; then
-            cd build/installer
-            makensis installer.nsi
-          else
-            echo "Skipping installer creation as bundled binaries are missing."
-          fi
         shell: bash
 
       - name: Upload Artifacts
@@ -95,6 +105,5 @@ jobs:
           files: |
             release-artifacts/RTSPVirtualCamAgent-x86_64.AppImage
             release-artifacts/rtsp-virtual-cam-agent.exe
-            release-artifacts/*Setup.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

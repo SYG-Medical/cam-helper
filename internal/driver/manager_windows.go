@@ -35,22 +35,27 @@ func (m *Manager) EnsureInstalled(ctx context.Context) error {
 		return nil
 	}
 
-	installer := m.resolve(m.cfg.DriverInstaller)
-	if _, err := os.Stat(installer); err != nil {
-		return fmt.Errorf("virtual camera installer not found: %s", installer)
+	// UnityCapture uses a DLL that needs to be registered
+	dllPath := m.resolve("internal/assets/third_party/driver/virtual-camera-installer.dll")
+	if _, err := os.Stat(dllPath); err == nil {
+		m.logger.Printf("registering virtual camera filter: %s", dllPath)
+		cmd := exec.CommandContext(ctx, "regsvr32", "/s", dllPath)
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("register filter: %w", err)
+		}
+		return nil
 	}
 
-	m.logger.Printf("driver not detected, running installer: %s", installer)
-	cmd := exec.CommandContext(ctx, installer, "/S")
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	output, err := cmd.CombinedOutput()
-	if len(output) > 0 {
-		m.logger.Printf("driver installer output: %s", strings.TrimSpace(string(output)))
+	// Fallback to legacy installer if exists
+	installer := m.resolve(m.cfg.DriverInstaller)
+	if _, err := os.Stat(installer); err == nil {
+		m.logger.Printf("running legacy driver installer: %s", installer)
+		cmd := exec.CommandContext(ctx, installer, "/S")
+		cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+		return cmd.Run()
 	}
-	if err != nil {
-		return fmt.Errorf("run installer: %w", err)
-	}
-	return nil
+
+	return errors.New("virtual camera driver not found and no installer available")
 }
 
 func (m *Manager) VirtualCameraPresent(ctx context.Context) (bool, error) {
