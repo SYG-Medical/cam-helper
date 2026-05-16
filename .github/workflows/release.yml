@@ -51,21 +51,28 @@ jobs:
           go-version: '1.22'
           cache: true
 
-      - name: Download FFmpeg and UnityCapture
+      - name: Download Dependencies (FFmpeg & Driver)
         shell: bash
         run: |
+          set -e
           mkdir -p internal/assets/third_party/ffmpeg
           mkdir -p internal/assets/third_party/driver
           
-          curl -L https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip -o ffmpeg.zip
-          unzip ffmpeg.zip
+          echo "Downloading FFmpeg..."
+          curl -L "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -o ffmpeg.zip
+          unzip -q ffmpeg.zip
           mv ffmpeg-*/bin/ffmpeg.exe internal/assets/third_party/ffmpeg/
           
-          curl -L "https://github.com/schellingb/UnityCapture/releases/download/v1.0.1/UnityCapture.zip" -o driver.zip
-          unzip driver.zip
-          cp UnityCapture/UnityCaptureFilter64.dll internal/assets/third_party/driver/virtual-camera-installer.dll
-          cp UnityCapture/Install.bat internal/assets/third_party/driver/install.bat
+          echo "Downloading UnityCapture Driver..."
+          curl -L "https://github.com/schellingb/UnityCapture/archive/refs/heads/master.zip" -o driver.zip
+          unzip -q driver.zip
+          
+          cp UnityCapture-master/Install/UnityCaptureFilter64.dll internal/assets/third_party/driver/virtual-camera-installer.dll
+          cp UnityCapture-master/Install/Install.bat internal/assets/third_party/driver/install.bat
           touch internal/assets/third_party/driver/virtual-camera-bridge.exe
+          
+          echo "Cleanup..."
+          rm -rf ffmpeg-*/ UnityCapture-master/ ffmpeg.zip driver.zip
 
       - name: Build Standalone EXE
         run: |
@@ -87,23 +94,16 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Download Linux Artifacts
+      - name: Download Artifacts
         uses: actions/download-artifact@v4
         with:
-          name: linux-appimage
-          path: release-artifacts
-
-      - name: Download Windows Artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: windows-binaries
-          path: release-artifacts
+          path: all-artifacts
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            release-artifacts/RTSPVirtualCamAgent-x86_64.AppImage
-            release-artifacts/rtsp-virtual-cam-agent.exe
+            all-artifacts/linux-appimage/RTSPVirtualCamAgent-x86_64.AppImage
+            all-artifacts/windows-binaries/rtsp-virtual-cam-agent.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
