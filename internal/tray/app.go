@@ -1,16 +1,22 @@
-//go:build windows
-
 package tray
 
 import (
+	_ "embed"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sync"
 	"time"
 
-	"github.com/getlantern/systray"
+	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/driver/desktop"
+	"fyne.io/fyne/v2/theme"
+	"fyne.io/fyne/v2/widget"
 
 	"rtsp-virtual-cam-agent/internal/autostart"
 	"rtsp-virtual-cam-agent/internal/config"
@@ -19,25 +25,20 @@ import (
 	"rtsp-virtual-cam-agent/internal/stream"
 )
 
+//go:embed resources/icon.png
+var iconData []byte
+
 type App struct {
+	fyneApp  fyne.App
+	window   fyne.Window
 	cfg      config.Config
 	cfgPath  string
 	logger   *logging.Logger
 	streamer *stream.Manager
 	driver   *driver.Manager
-	menu     menuItems
 	mu       sync.Mutex
-}
 
-type menuItems struct {
-	status     *systray.MenuItem
-	start      *systray.MenuItem
-	stop       *systray.MenuItem
-	reload     *systray.MenuItem
-	openConfig *systray.MenuItem
-	openLogs   *systray.MenuItem
-	toggleAuto *systray.MenuItem
-	quit       *systray.MenuItem
+	statusLabel *widget.Label
 }
 
 func New() (*App, error) {
@@ -57,73 +58,145 @@ func New() (*App, error) {
 	}
 
 	streamer := stream.New(cfg, logger, drv)
-	return &App{cfg: cfg, cfgPath: cfgPath, logger: logger, streamer: streamer, driver: drv}, nil
-}
 
-func (a *App) Run() error {
-	systray.Run(a.onReady, a.onExit)
-	return nil
-}
+	a := app.NewWithID("com.syg.rtsp-agent")
+	w := a.NewWindow("SYG RTSP Agent")
+	w.SetIcon(fyne.NewStaticResource("icon.png", iconData))
 
-func (a *App) onReady() {
-	systray.SetTitle("SYG RTSP Cam")
-	systray.SetTooltip("SYG RTSP Virtual Cam Agent")
-
-	a.menu.status = systray.AddMenuItem("Status: starting", "Current pipeline state")
-	a.menu.status.Disable()
-	systray.AddSeparator()
-	a.menu.start = systray.AddMenuItem("Start stream", "Start the RTSP pipeline")
-	a.menu.stop = systray.AddMenuItem("Stop stream", "Stop the RTSP pipeline")
-	a.menu.reload = systray.AddMenuItem("Reload config", "Reload config from AppData")
-	systray.AddSeparator()
-	a.menu.openConfig = systray.AddMenuItem("Open config", "Open config file in the default editor")
-	a.menu.openLogs = systray.AddMenuItem("Open logs folder", "Open the logs directory")
-	a.menu.toggleAuto = systray.AddMenuItem("Autostart: checking...", "Toggle Windows autostart")
-	systray.AddSeparator()
-	a.menu.quit = systray.AddMenuItem("Quit", "Quit the agent")
-
-	a.refreshAutostartLabel()
-	a.refreshStatusLabel()
-
-	if a.cfg.AutoStart {
-		if err := a.streamer.Start(); err != nil {
-			a.logger.Printf("autostart stream failed: %v", err)
-		}
+	appObj := &App{
+		fyneApp:  a,
+		window:   w,
+		cfg:      cfg,
+		cfgPath:  cfgPath,
+		logger:   logger,
+		streamer: streamer,
+		driver:   drv,
 	}
 
-	go a.eventLoop()
+	appObj.setupUI()
+	appObj.setupTray()
+
+	return appObj, nil
+}
+
+func (a *App) setupUI() {
+	a.window.Resize(fyne.NewSize(450, 350))
+	a.window.SetCloseIntercept(a.handleClose)
+
+	a.statusLabel = widget.NewLabelWithStyle("Status: stopped", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
+
+	urlEntry := widget.NewEntry()
+	urlEntry.SetText(a.cfg.RTSPURL)
+	urlEntry.OnChanged = func(s string) {
+		a.mu.Lock()
+		a.cfg.RTSPURL = s
+		a.mu.Unlock()
+	}
+
+	startBtn := widget.NewButtonWithIcon("Start", theme.MediaPlayIcon(), func() {
+		if err := a.streamer.Start(); err != nil {
+			dialog.ShowError(err, a.window)
+		}
+	})
+
+	stopBtn := widget.NewButtonWithIcon("Stop", theme.MediaStopIcon(), func() {
+		a.streamer.Stop()
+	})
+
+	autostartCheck := widget.NewCheck("Start on login", func(checked bool) {
+		a.mu.Lock()
+		a.cfg.AutoStart = checked
+		a.mu.Unlock()
+		if err := autostart.SetEnabled(checked); err != nil {
+			dialog.ShowError(err, a.window)
+		}
+	})
+	autostartCheck.SetChecked(a.cfg.AutoStart)
+
+	saveBtn := widget.NewButtonWithIcon("Save Config", theme.DocumentSaveIcon(), func() {
+		a.mu.Lock()
+		err := config.Save(a.cfg, a.cfgPath)
+		a.mu.Unlock()
+		if err != nil {
+			dialog.ShowError(err, a.window)
+		} else {
+			dialog.ShowInformation("Success", "Configuration saved.", a.window)
+		}
+	})
+
+	a.window.SetContent(container.NewPadded(
+		container.NewVBox(
+			widget.NewLabelWithStyle("SYG RTSP Virtual Camera Agent", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+			a.statusLabel,
+			widget.NewForm(
+				widget.NewFormItem("RTSP URL", urlEntry),
+			),
+			autostartCheck,
+			container.NewGridWithColumns(2, startBtn, stopBtn),
+			saveBtn,
+			widget.NewSeparator(),
+			widget.NewButtonWithIcon("Open Config", theme.SettingsIcon(), func() {
+				openPath(a.cfgPath)
+			}),
+			widget.NewButtonWithIcon("Open Logs", theme.FolderOpenIcon(), func() {
+				if logDir, err := config.LogsDir(); err == nil {
+					openPath(logDir)
+				}
+			}),
+		),
+	))
+
 	go a.statusLoop()
 }
 
-func (a *App) onExit() {
-	a.streamer.Stop()
-	_ = a.logger.Close()
+func (a *App) setupTray() {
+	if desk, ok := a.fyneApp.(desktop.App); ok {
+		m := fyne.NewMenu("SYG RTSP Agent",
+			fyne.NewMenuItem("Show Agent", func() {
+				a.window.Show()
+			}),
+			fyne.NewMenuItemSeparator(),
+			fyne.NewMenuItem("Start Stream", func() {
+				_ = a.streamer.Start()
+			}),
+			fyne.NewMenuItem("Stop Stream", func() {
+				a.streamer.Stop()
+			}),
+			fyne.NewMenuItemSeparator(),
+			fyne.NewMenuItem("Quit", func() {
+				a.Quit()
+			}),
+		)
+		desk.SetSystemTrayMenu(m)
+		desk.SetSystemTrayIcon(fyne.NewStaticResource("icon.png", iconData))
+	}
 }
 
-func (a *App) eventLoop() {
-	for {
-		select {
-		case <-a.menu.start.ClickedCh:
-			if err := a.streamer.Start(); err != nil {
-				a.logger.Printf("start failed: %v", err)
+func (a *App) handleClose() {
+	dialog.ShowCustomConfirm("Exit Agent?", "Quit", "Minimize to Tray",
+		widget.NewLabel("Do you want to completely quit the application or keep it running in the system tray?"),
+		func(quit bool) {
+			if quit {
+				a.Quit()
+			} else {
+				a.window.Hide()
 			}
-		case <-a.menu.stop.ClickedCh:
-			a.streamer.Stop()
-		case <-a.menu.reload.ClickedCh:
-			a.reloadConfig()
-		case <-a.menu.openConfig.ClickedCh:
-			openPath(a.cfgPath)
-		case <-a.menu.openLogs.ClickedCh:
-			if logDir, err := config.LogsDir(); err == nil {
-				openPath(logDir)
-			}
-		case <-a.menu.toggleAuto.ClickedCh:
-			a.toggleAutostart()
-		case <-a.menu.quit.ClickedCh:
-			systray.Quit()
-			return
-		}
+		}, a.window)
+}
+
+func (a *App) Run() error {
+	if a.cfg.AutoStart {
+		_ = a.streamer.Start()
 	}
+	a.window.ShowAndRun()
+	return nil
+}
+
+func (a *App) Quit() {
+	a.streamer.Stop()
+	_ = a.logger.Close()
+	a.fyneApp.Quit()
+	os.Exit(0)
 }
 
 func (a *App) statusLoop() {
@@ -131,76 +204,13 @@ func (a *App) statusLoop() {
 	defer ticker.Stop()
 
 	for range ticker.C {
-		a.refreshStatusLabel()
-	}
-}
-
-func (a *App) refreshStatusLabel() {
-	state := a.streamer.State()
-	label := fmt.Sprintf("Status: %s", statusText(state))
-	if state.RestartCount > 0 {
-		label = fmt.Sprintf("%s | restarts: %d", label, state.RestartCount)
-	}
-	if state.LastError != "" {
-		label = fmt.Sprintf("%s | last error: %s", label, state.LastError)
-	}
-	if a.menu.status != nil {
-		a.menu.status.SetTitle(label)
-	}
-	systray.SetTooltip(label)
-}
-
-func (a *App) refreshAutostartLabel() {
-	enabled, err := autostart.IsEnabled()
-	if err != nil {
-		a.menu.toggleAuto.SetTitle("Autostart: error")
-		a.logger.Printf("autostart check failed: %v", err)
-		return
-	}
-	if enabled {
-		a.menu.toggleAuto.SetTitle("Disable autostart")
-		return
-	}
-	a.menu.toggleAuto.SetTitle("Enable autostart")
-}
-
-func (a *App) toggleAutostart() {
-	enabled, err := autostart.IsEnabled()
-	if err != nil {
-		a.logger.Printf("autostart check failed: %v", err)
-		return
-	}
-	if err := autostart.SetEnabled(!enabled); err != nil {
-		a.logger.Printf("autostart toggle failed: %v", err)
-		return
-	}
-	a.refreshAutostartLabel()
-}
-
-func (a *App) reloadConfig() {
-	cfg, cfgPath, err := config.LoadOrCreate()
-	if err != nil {
-		a.logger.Printf("reload config failed: %v", err)
-		return
-	}
-
-	a.mu.Lock()
-	a.cfg = cfg
-	a.cfgPath = cfgPath
-	a.mu.Unlock()
-	a.driver.UpdateConfig(cfg)
-	a.streamer.UpdateConfig(cfg)
-	wasRunning := a.streamer.State().Running
-	if wasRunning {
-		a.streamer.Stop()
-	}
-	if cfg.AutoStart && !a.streamer.State().Running {
-		if err := a.streamer.Start(); err != nil {
-			a.logger.Printf("restart after reload failed: %v", err)
+		state := a.streamer.State()
+		label := fmt.Sprintf("Status: %s", statusText(state))
+		if state.RestartCount > 0 {
+			label = fmt.Sprintf("%s (restarts: %d)", label, state.RestartCount)
 		}
+		a.statusLabel.SetText(label)
 	}
-	a.refreshAutostartLabel()
-	a.refreshStatusLabel()
 }
 
 func statusText(state stream.State) string {
@@ -214,9 +224,15 @@ func statusText(state stream.State) string {
 }
 
 func openPath(target string) {
-	if runtime.GOOS != "windows" {
+	cleaned := filepath.Clean(target)
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", cleaned)
+	case "linux":
+		cmd = exec.Command("xdg-open", cleaned)
+	default:
 		return
 	}
-	cleaned := filepath.Clean(target)
-	_ = exec.Command("rundll32", "url.dll,FileProtocolHandler", cleaned).Start()
+	_ = cmd.Start()
 }

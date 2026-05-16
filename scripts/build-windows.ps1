@@ -4,9 +4,9 @@ $RepoRoot = Split-Path -Parent $PSScriptRoot
 $OutDir = Join-Path $RepoRoot 'out/windows'
 $DistDir = Join-Path $RepoRoot 'dist'
 $AppExe = Join-Path $OutDir 'rtsp-virtual-cam-agent.exe'
-$FfmpegPath = Join-Path $RepoRoot 'third_party/ffmpeg/ffmpeg.exe'
-$DriverInstaller = Join-Path $RepoRoot 'third_party/driver/virtual-camera-installer.exe'
-$BridgeExe = Join-Path $RepoRoot 'third_party/driver/virtual-camera-bridge.exe'
+$FfmpegPath = Join-Path $RepoRoot 'internal/assets/third_party/ffmpeg/ffmpeg.exe'
+$DriverInstaller = Join-Path $RepoRoot 'internal/assets/third_party/driver/virtual-camera-installer.exe'
+$BridgeExe = Join-Path $RepoRoot 'internal/assets/third_party/driver/virtual-camera-bridge.exe'
 
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 New-Item -ItemType Directory -Force -Path $DistDir | Out-Null

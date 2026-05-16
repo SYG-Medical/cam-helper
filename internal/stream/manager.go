@@ -52,6 +52,10 @@ func (m *Manager) Start() error {
 		return errors.New("rtsp_url is empty")
 	}
 
+	if user, busy, err := m.driver.IsDeviceBusy(); err == nil && busy {
+		return fmt.Errorf("virtual camera device is already in use by: %s", user)
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
 	m.state = State{Running: true, StartedAt: time.Now(), RestartCount: m.restartCount}
@@ -102,6 +106,14 @@ func (m *Manager) supervise(ctx context.Context) {
 		if err := m.driver.EnsureInstalled(ctx); err != nil {
 			m.recordError(err)
 			if !sleepOrDone(ctx, 8*time.Second) {
+				return
+			}
+			continue
+		}
+
+		if user, busy, err := m.driver.IsDeviceBusy(); err == nil && busy {
+			m.recordError(fmt.Errorf("virtual camera is in use by: %s", user))
+			if !sleepOrDone(ctx, 5*time.Second) {
 				return
 			}
 			continue

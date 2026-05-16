@@ -1,0 +1,100 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-linux:
+    name: Build Linux AppImage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxcursor-dev libxrandr-dev libxinerama-dev libxi-dev libgl1-mesa-dev xorg-dev
+
+      - name: Build AppImage
+        run: make package-linux
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-appimage
+          path: dist/RTSPVirtualCamAgent-x86_64.AppImage
+
+  build-windows:
+    name: Build Windows Standalone
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+
+      - name: Build Standalone EXE
+        run: |
+          mkdir -p dist
+          go build -trimpath -ldflags="-H=windowsgui -s -w" -o dist/rtsp-virtual-cam-agent.exe ./cmd/app
+        shell: bash
+
+      - name: Build Installer (Optional)
+        run: |
+          # Only run makensis if the binaries are present, otherwise it will likely fail
+          if [ -f "internal/assets/third_party/ffmpeg/ffmpeg.exe" ]; then
+            cd build/installer
+            makensis installer.nsi
+          else
+            echo "Skipping installer creation as bundled binaries are missing."
+          fi
+        shell: bash
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-binaries
+          path: |
+            dist/*.exe
+
+  release:
+    name: Create Release
+    needs: [build-linux, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download Linux Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-appimage
+          path: release-artifacts
+
+      - name: Download Windows Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-binaries
+          path: release-artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-artifacts/RTSPVirtualCamAgent-x86_64.AppImage
+            release-artifacts/rtsp-virtual-cam-agent.exe
+            release-artifacts/*Setup.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

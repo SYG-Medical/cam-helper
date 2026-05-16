@@ -90,6 +90,7 @@ Notes:
 ```bash
 make build-linux
 make build-windows
+make build-distrobox-windows
 make package-linux
 make package-windows
 ```

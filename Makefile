@@ -7,13 +7,16 @@ build-linux:
 	go build -o $(APP_NAME) ./cmd/app
 
 build-windows:
-	GOOS=windows GOARCH=amd64 go build -o $(APP_NAME).exe ./cmd/app
+	bash ./scripts/build-windows.sh
+
+build-distrobox-windows:
+	distrobox enter dev-backend -- make build-windows
 
 package-linux:
 	bash ./scripts/build-linux-appimage.sh
 
 package-windows:
-	pwsh -ExecutionPolicy Bypass -File ./scripts/build-windows.ps1
+	bash ./scripts/build-windows.sh
 
 clean:
 	rm -rf dist out AppDir $(APP_NAME) $(APP_NAME).exe

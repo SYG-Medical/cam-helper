@@ -99,6 +99,11 @@ func (m *Manager) StartBridge(ctx context.Context) (*exec.Cmd, error) {
 func (m *Manager) UseBridge() bool {
 	return true
 }
+func (m *Manager) IsDeviceBusy() (string, bool, error) {
+	// On Windows, checking which process uses a virtual camera is complex.
+	// For now, we return false and let the bridge handle its own errors.
+	return "", false, nil
+}
 
 func (m *Manager) FFmpegOutputTarget() string {
 	return fmt.Sprintf("udp://127.0.0.1:%d?pkt_size=1316", m.cfg.BridgePort)
