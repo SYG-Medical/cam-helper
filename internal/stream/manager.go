@@ -244,11 +244,20 @@ func (m *Manager) buildFFmpegCommand(ctx context.Context) (*exec.Cmd, error) {
 			m.driver.FFmpegOutputTarget(),
 		)
 	} else {
-		args = append(args,
-			"-pix_fmt", "yuv420p",
-			"-f", "v4l2",
-			m.driver.FFmpegOutputTarget(),
-		)
+		if runtime.GOOS == "windows" {
+			// On Windows, use dshow for direct output if bridge is disabled
+			args = append(args,
+				"-pix_fmt", "yuv420p",
+				"-f", "dshow",
+				m.driver.FFmpegOutputTarget(),
+			)
+		} else {
+			args = append(args,
+				"-pix_fmt", "yuv420p",
+				"-f", "v4l2",
+				m.driver.FFmpegOutputTarget(),
+			)
+		}
 	}
 
 	return exec.CommandContext(ctx, path, args...), nil

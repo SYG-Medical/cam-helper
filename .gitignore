@@ -11,12 +11,14 @@ coverage.out
 .cache/
 .DS_Store
 
-# Third party binaries should be bundled but not committed to git usually
-# If you want to commit them, remove these lines
-internal/assets/third_party/ffmpeg/*
-!internal/assets/third_party/ffmpeg/.gitkeep
-internal/assets/third_party/driver/*
-!internal/assets/third_party/driver/.gitkeep
+# We want to keep the directory structure and placeholders
+!internal/assets/third_party/**/README.txt
+!internal/assets/third_party/**/.gitkeep
 
-# Old path just in case
+# Ignore the actual binaries (they are large)
+internal/assets/third_party/ffmpeg/ffmpeg
+internal/assets/third_party/ffmpeg/ffmpeg.exe
+internal/assets/third_party/driver/*.exe
+
+# Old path
 third_party/

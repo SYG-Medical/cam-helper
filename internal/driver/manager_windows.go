@@ -78,9 +78,12 @@ func (m *Manager) BridgePath() string {
 }
 
 func (m *Manager) StartBridge(ctx context.Context) (*exec.Cmd, error) {
+	// If we find a way to avoid the bridge, we return nil here.
+	// For now, we still try to resolve it but allow it to be missing.
 	bridge := m.BridgePath()
 	if _, err := os.Stat(bridge); err != nil {
-		return nil, fmt.Errorf("virtual camera bridge not found: %s", bridge)
+		m.logger.Printf("virtual camera bridge not found, attempting direct mode")
+		return nil, nil 
 	}
 
 	args := []string{
@@ -97,16 +100,22 @@ func (m *Manager) StartBridge(ctx context.Context) (*exec.Cmd, error) {
 }
 
 func (m *Manager) UseBridge() bool {
-	return true
+	// If bridge exists, use it. Otherwise, try direct dshow output.
+	_, err := os.Stat(m.BridgePath())
+	return err == nil
 }
+
 func (m *Manager) IsDeviceBusy() (string, bool, error) {
-	// On Windows, checking which process uses a virtual camera is complex.
-	// For now, we return false and let the bridge handle its own errors.
 	return "", false, nil
 }
 
 func (m *Manager) FFmpegOutputTarget() string {
-	return fmt.Sprintf("udp://127.0.0.1:%d?pkt_size=1316", m.cfg.BridgePort)
+	if m.UseBridge() {
+		return fmt.Sprintf("udp://127.0.0.1:%d?pkt_size=1316", m.cfg.BridgePort)
+	}
+	// Fallback to DirectShow output if bridge is missing
+	// Note: This requires a DirectShow sink filter named exactly like TargetVirtualCamera
+	return fmt.Sprintf("video=%s", m.cfg.TargetVirtualCamera)
 }
 
 func (m *Manager) resolve(candidate string) string {
