@@ -15,8 +15,11 @@ build-distrobox-windows:
 package-linux:
 	bash ./scripts/build-linux-appimage.sh
 
+fetch-deps:
+	powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/fetch-deps.ps1
+
 package-windows:
-	bash ./scripts/build-windows.sh
+	powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-windows.ps1
 
 clean:
 	rm -rf dist out AppDir $(APP_NAME) $(APP_NAME).exe

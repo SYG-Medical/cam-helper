@@ -35,15 +35,23 @@ func (m *Manager) EnsureInstalled(ctx context.Context) error {
 		return nil
 	}
 
-	// UnityCapture uses a DLL that needs to be registered
-	dllPath := m.resolve("internal/assets/third_party/driver/virtual-camera-installer.dll")
-	if _, err := os.Stat(dllPath); err == nil {
-		m.logger.Printf("registering virtual camera filter: %s", dllPath)
-		cmd := exec.CommandContext(ctx, "regsvr32", "/s", dllPath)
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("register filter: %w", err)
+	// Try multiple locations for the UnityCapture DLL
+	candidates := []string{
+		"third_party/driver/virtual-camera-installer.dll",
+		"internal/assets/third_party/driver/virtual-camera-installer.dll",
+	}
+
+	for _, candidate := range candidates {
+		dllPath := m.resolve(candidate)
+		if _, err := os.Stat(dllPath); err == nil {
+			m.logger.Printf("registering virtual camera filter: %s", dllPath)
+			// regsvr32 /s requires admin, which the app should have if it got this far or via the installer
+			cmd := exec.CommandContext(ctx, "regsvr32", "/s", dllPath)
+			if err := cmd.Run(); err != nil {
+				return fmt.Errorf("register filter (%s): %w", dllPath, err)
+			}
+			return nil
 		}
-		return nil
 	}
 
 	// Fallback to legacy installer if exists
@@ -55,7 +63,7 @@ func (m *Manager) EnsureInstalled(ctx context.Context) error {
 		return cmd.Run()
 	}
 
-	return errors.New("virtual camera driver not found and no installer available")
+	return errors.New("virtual camera driver not found and no installer available. Please run the setup installer as Administrator.")
 }
 
 func (m *Manager) VirtualCameraPresent(ctx context.Context) (bool, error) {

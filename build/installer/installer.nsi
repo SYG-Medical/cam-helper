@@ -24,26 +24,34 @@ Unicode True
 
 Section "Install"
   SetOutPath "$INSTDIR"
-
   File "..\\..\\out\\windows\\${APP_EXE}"
-  File /r "..\\..\\internal\\assets\\third_party\\ffmpeg"
-  File /r "..\\..\\internal\\assets\\third_party\\driver"
 
-  IfFileExists "$INSTDIR\\third_party\\driver\\${DRIVER_INSTALLER}" 0 +3
-    ExecWait '"$INSTDIR\\third_party\\driver\\${DRIVER_INSTALLER}" /S'
-    DetailPrint "Virtual camera installer executed."
+  # Bundle dependencies into third_party
+  SetOutPath "$INSTDIR\\third_party\\ffmpeg"
+  File "..\\..\\internal\\assets\\third_party\\ffmpeg\\ffmpeg.exe"
 
+  SetOutPath "$INSTDIR\\third_party\\driver"
+  File "..\\..\\internal\\assets\\third_party\\driver\\virtual-camera-installer.dll"
+
+  # Register Virtual Camera DLL
+  DetailPrint "Registering Virtual Camera Driver..."
+  ExecWait 'regsvr32 /s "$INSTDIR\\third_party\\driver\\virtual-camera-installer.dll"'
+
+  SetOutPath "$INSTDIR"
   WriteUninstaller "$INSTDIR\\Uninstall.exe"
   CreateShortcut "$SMSTARTUP\\${APP_NAME}.lnk" "$INSTDIR\\${APP_EXE}"
   CreateShortcut "$SMPROGRAMS\\${APP_NAME}.lnk" "$INSTDIR\\${APP_EXE}"
 SectionEnd
 
 Section "Uninstall"
+  # Unregister Virtual Camera DLL
+  DetailPrint "Unregistering Virtual Camera Driver..."
+  ExecWait 'regsvr32 /u /s "$INSTDIR\\third_party\\driver\\virtual-camera-installer.dll"'
+
   Delete "$SMSTARTUP\\${APP_NAME}.lnk"
   Delete "$SMPROGRAMS\\${APP_NAME}.lnk"
   Delete "$INSTDIR\\${APP_EXE}"
   Delete "$INSTDIR\\Uninstall.exe"
-  RMDir /r "$INSTDIR\\third_party\\ffmpeg"
-  RMDir /r "$INSTDIR\\third_party\\driver"
+  RMDir /r "$INSTDIR\\third_party"
   RMDir "$INSTDIR"
 SectionEnd

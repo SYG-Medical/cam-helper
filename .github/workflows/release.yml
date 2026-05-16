@@ -74,11 +74,10 @@ jobs:
           echo "Cleanup..."
           rm -rf ffmpeg-*/ UnityCapture-master/ ffmpeg.zip driver.zip
 
-      - name: Build Standalone EXE
+      - name: Build Windows Installer
+        shell: pwsh
         run: |
-          mkdir -p dist
-          go build -trimpath -ldflags="-H=windowsgui -s -w" -o dist/rtsp-virtual-cam-agent.exe ./cmd/app
-        shell: bash
+          ./scripts/build-windows.ps1
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
@@ -98,12 +97,13 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: all-artifacts
+          merge-multiple: true
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            all-artifacts/linux-appimage/RTSPVirtualCamAgent-x86_64.AppImage
-            all-artifacts/windows-binaries/rtsp-virtual-cam-agent.exe
+            RTSPVirtualCamAgent-x86_64.AppImage
+            SYG RTSP Virtual Cam Agent-Setup.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

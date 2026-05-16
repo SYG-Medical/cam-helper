@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 )
 
-//go:embed all:third_party
+// //go:embed all:third_party
 var Data embed.FS
 
 func ExtractAll(targetDir string) error {
