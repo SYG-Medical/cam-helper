@@ -43,7 +43,12 @@ try {
 
   if ($Makensis) {
     Write-Host "Creating installer using $Makensis..."
-    & $Makensis .\build\installer\installer.nsi
+    Push-Location "build/installer"
+    try {
+      & $Makensis installer.nsi
+    } finally {
+      Pop-Location
+    }
   } else {
     Write-Warning "makensis not found in PATH or common locations. Please add NSIS to your PATH or install it to the default location."
   }
