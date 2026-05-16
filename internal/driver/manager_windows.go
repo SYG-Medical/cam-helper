@@ -255,15 +255,23 @@ func (m *Manager) OpenWriter() error {
 		suffix = fmt.Sprintf("%d", capNum)
 	}
 
-	mutexName, _ := windows.UTF16PtrFromString("UnityCapture_Mutx" + suffix)
-	eventWantName, _ := windows.UTF16PtrFromString("UnityCapture_Want" + suffix)
-	eventSentName, _ := windows.UTF16PtrFromString("UnityCapture_Sent" + suffix)
-	dataName, _ := windows.UTF16PtrFromString("UnityCapture_Data" + suffix)
+	mutexName, _ := windows.UTF16PtrFromString("Global\\UnityCapture_Mutx" + suffix)
+	eventWantName, _ := windows.UTF16PtrFromString("Global\\UnityCapture_Want" + suffix)
+	eventSentName, _ := windows.UTF16PtrFromString("Global\\UnityCapture_Sent" + suffix)
+	dataName, _ := windows.UTF16PtrFromString("Global\\UnityCapture_Data" + suffix)
 
 	// Create/Open mapping
 	hMapping, err := windows.CreateFileMapping(windows.InvalidHandle, nil, windows.PAGE_READWRITE, 0, uint32(unsafe.Sizeof(sharedMemHeader{})+MaxSharedImageSize), dataName)
 	if err != nil {
-		return fmt.Errorf("create file mapping: %w", err)
+		// Try without Global prefix if Global fails (e.g. no permission)
+		mutexName, _ = windows.UTF16PtrFromString("UnityCapture_Mutx" + suffix)
+		eventWantName, _ = windows.UTF16PtrFromString("UnityCapture_Want" + suffix)
+		eventSentName, _ = windows.UTF16PtrFromString("UnityCapture_Sent" + suffix)
+		dataName, _ = windows.UTF16PtrFromString("UnityCapture_Data" + suffix)
+		hMapping, err = windows.CreateFileMapping(windows.InvalidHandle, nil, windows.PAGE_READWRITE, 0, uint32(unsafe.Sizeof(sharedMemHeader{})+MaxSharedImageSize), dataName)
+		if err != nil {
+			return fmt.Errorf("create file mapping: %w", err)
+		}
 	}
 
 	ptr, err := windows.MapViewOfFile(hMapping, windows.FILE_MAP_WRITE, 0, 0, 0)
@@ -273,14 +281,14 @@ func (m *Manager) OpenWriter() error {
 	}
 
 	hMutex, err := windows.CreateMutex(nil, false, mutexName)
-	if err != nil {
+	if err != nil && !errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
 		windows.UnmapViewOfFile(ptr)
 		windows.CloseHandle(hMapping)
 		return fmt.Errorf("create mutex: %w", err)
 	}
 
 	hEventWant, err := windows.CreateEvent(nil, 0, 0, eventWantName)
-	if err != nil {
+	if err != nil && !errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
 		windows.CloseHandle(hMutex)
 		windows.UnmapViewOfFile(ptr)
 		windows.CloseHandle(hMapping)
@@ -288,7 +296,7 @@ func (m *Manager) OpenWriter() error {
 	}
 
 	hEventSent, err := windows.CreateEvent(nil, 0, 0, eventSentName)
-	if err != nil {
+	if err != nil && !errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
 		windows.CloseHandle(hEventWant)
 		windows.CloseHandle(hMutex)
 		windows.UnmapViewOfFile(ptr)
@@ -296,8 +304,17 @@ func (m *Manager) OpenWriter() error {
 		return fmt.Errorf("create event sent: %w", err)
 	}
 
+	// Initialize header under mutex
+	s, err := windows.WaitForSingleObject(hMutex, 2000)
+	if err == nil && s == windows.WAIT_OBJECT_0 {
+		header := (*sharedMemHeader)(unsafe.Pointer(ptr))
+		header.MaxSize = uint32(MaxSharedImageSize)
+		windows.ReleaseMutex(hMutex)
+	} else {
+		m.logger.Printf("warning: could not lock mutex for header initialization: %v (status %d)", err, s)
+	}
+
 	header := (*sharedMemHeader)(unsafe.Pointer(ptr))
-	header.MaxSize = uint32(MaxSharedImageSize)
 
 	// Create a slice that points to the data area
 	dataPtr := ptr + unsafe.Sizeof(sharedMemHeader{})
@@ -344,11 +361,15 @@ func (m *Manager) WriteFrame(width, height int, pix []byte) error {
 	}
 
 	// Wait for mutex
-	s, err := windows.WaitForSingleObject(w.mutex, 1000)
+	s, err := windows.WaitForSingleObject(w.mutex, 500)
 	if err != nil || s != windows.WAIT_OBJECT_0 {
-		return fmt.Errorf("wait for mutex: %v (status %d)", err, s)
+		return fmt.Errorf("wait for mutex: %v (status %d, last error: %v)", err, s, windows.GetLastError())
 	}
-	defer windows.ReleaseMutex(w.mutex)
+	defer func() {
+		if err := windows.ReleaseMutex(w.mutex); err != nil {
+			m.logger.Printf("release mutex error: %v", err)
+		}
+	}()
 
 	w.header.Width = int32(width)
 	w.header.Height = int32(height)
