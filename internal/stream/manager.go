@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"sync"
 	"time"
 
@@ -260,7 +261,11 @@ func (m *Manager) buildFFmpegCommand(ctx context.Context) (*exec.Cmd, error) {
 		}
 	}
 
-	return exec.CommandContext(ctx, path, args...), nil
+	cmd := exec.CommandContext(ctx, path, args...)
+	if runtime.GOOS == "windows" {
+		cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	}
+	return cmd, nil
 }
 
 func (m *Manager) resolveFFmpegPath() (string, error) {

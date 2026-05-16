@@ -16,6 +16,7 @@ import (
 	"rtsp-virtual-cam-agent/internal/logging"
 
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
 )
 
 type Manager struct {
@@ -35,6 +36,12 @@ func New(cfg config.Config, logger *logging.Logger) (*Manager, error) {
 func (m *Manager) EnsureInstalled(ctx context.Context) error {
 	if ok, _ := m.VirtualCameraPresent(ctx); ok {
 		return nil
+	}
+
+	// For UnityCapture, we can pre-configure the name in registry so it matches our config
+	// even before registration, or right after.
+	if m.cfg.TargetVirtualCamera != "" {
+		m.configureUnityCaptureName(m.cfg.TargetVirtualCamera)
 	}
 
 	// We need to register the driver, check for admin rights first
@@ -101,15 +108,64 @@ func (m *Manager) VirtualCameraPresent(ctx context.Context) (bool, error) {
 		return false, errors.New("target virtual camera is empty")
 	}
 
+	// First try Registry check (most reliable for DirectShow filters)
+	if m.checkFilterInRegistry(m.cfg.TargetVirtualCamera) {
+		return true, nil
+	}
+
+	// Fallback to PowerShell PnP check
 	script := fmt.Sprintf(`Get-PnpDevice -Class Camera,Image | Where-Object { $_.FriendlyName -like '*%s*' } | Select-Object -ExpandProperty FriendlyName`, escapePowerShellLike(m.cfg.TargetVirtualCamera))
 	cmd := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	out, err := cmd.Output()
-	if err != nil {
-		return false, fmt.Errorf("query cameras: %w", err)
+	if err == nil && strings.TrimSpace(string(out)) != "" {
+		return true, nil
 	}
 
-	return strings.TrimSpace(string(out)) != "", nil
+	return false, nil
+}
+
+func (m *Manager) checkFilterInRegistry(name string) bool {
+	// DirectShow Video Input Category
+	const videoInputCat = `SOFTWARE\Microsoft\ActiveMovie\devenum\{860BB310-5D01-11D0-BD3B-00A0C911CE86}`
+
+	// Check both HKLM and HKCU
+	roots := []registry.Key{registry.LOCAL_MACHINE, registry.CURRENT_USER}
+	for _, root := range roots {
+		k, err := registry.OpenKey(root, videoInputCat, registry.READ)
+		if err != nil {
+			continue
+		}
+		defer k.Close()
+
+		subkeys, err := k.ReadSubKeyNames(-1)
+		if err != nil {
+			continue
+		}
+
+		for _, subkey := range subkeys {
+			sk, err := registry.OpenKey(k, subkey, registry.READ)
+			if err != nil {
+				continue
+			}
+			friendlyName, _, err := sk.GetStringValue("FriendlyName")
+			sk.Close()
+			if err == nil && strings.Contains(strings.ToLower(friendlyName), strings.ToLower(name)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (m *Manager) configureUnityCaptureName(name string) {
+	// UnityCapture reads its device name from this registry key
+	k, _, err := registry.CreateKey(registry.CURRENT_USER, `Software\UnityCapture`, registry.SET_VALUE)
+	if err != nil {
+		return
+	}
+	defer k.Close()
+	_ = k.SetStringValue("DeviceName", name)
 }
 
 func (m *Manager) UpdateConfig(cfg config.Config) {
