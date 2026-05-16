@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"unsafe"
 	"reflect"
+	"runtime"
 
 	"rtsp-virtual-cam-agent/internal/config"
 	"rtsp-virtual-cam-agent/internal/logging"
@@ -304,7 +305,11 @@ func (m *Manager) OpenWriter() error {
 		return fmt.Errorf("create event sent: %w", err)
 	}
 
-	// Initialize header under mutex
+	// Initialize header under mutex.
+	// Mutexes are thread-affine on Windows, so we must lock the OS thread.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
 	s, err := windows.WaitForSingleObject(hMutex, 2000)
 	if err == nil && s == windows.WAIT_OBJECT_0 {
 		header := (*sharedMemHeader)(unsafe.Pointer(ptr))
@@ -348,11 +353,6 @@ func (m *Manager) CloseWriter() {
 	m.writer = nil
 }
 
-// ErrNoConsumer is returned when the virtual camera filter is not yet
-// consuming frames (e.g. the DirectShow filter hasn't opened the device).
-// Callers should treat this as a transient, non-fatal condition.
-var ErrNoConsumer = errors.New("virtual camera has no consumer yet")
-
 func (m *Manager) WriteFrame(width, height int, pix []byte) error {
 	if m.writer == nil {
 		if err := m.OpenWriter(); err != nil {
@@ -364,6 +364,11 @@ func (m *Manager) WriteFrame(width, height int, pix []byte) error {
 	if len(pix) > MaxSharedImageSize {
 		return errors.New("frame too large")
 	}
+
+	// Mutexes are thread-affine on Windows; we MUST release from the same
+	// thread that acquired. Lock the OS thread for the duration of the wait+write.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 
 	// Wait for the DirectShow filter to release the mutex.
 	// WAIT_OBJECT_0  (0)    – we own it, proceed.

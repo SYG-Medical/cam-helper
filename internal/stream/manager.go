@@ -254,7 +254,7 @@ func (m *Manager) buildFFmpegCommand(ctx context.Context) (*exec.Cmd, error) {
 		"-loglevel", "warning",
 		"-rtsp_transport", "tcp",
 		"-fflags", "+genpts+nobuffer",
-		"-flags", "low_delay",
+		"-thread_queue_size", "1024",
 		"-i", cfg.RTSPURL,
 		"-an",
 		"-vf", fmt.Sprintf("scale=%d:%d,fps=%d", cfg.Width, cfg.Height, cfg.FPS),
