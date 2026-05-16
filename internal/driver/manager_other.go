@@ -322,3 +322,14 @@ func discoverOurDevice() string {
 	}
 	return ""
 }
+
+func (m *Manager) OpenWriter() error {
+	return nil
+}
+
+func (m *Manager) CloseWriter() {
+}
+
+func (m *Manager) WriteFrame(width, height int, pix []byte) error {
+	return nil
+}

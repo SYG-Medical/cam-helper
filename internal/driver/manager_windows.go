@@ -279,7 +279,7 @@ func (m *Manager) OpenWriter() error {
 		return fmt.Errorf("create mutex: %w", err)
 	}
 
-	hEventWant, err := windows.CreateEvent(nil, false, false, eventWantName)
+	hEventWant, err := windows.CreateEvent(nil, 0, 0, eventWantName)
 	if err != nil {
 		windows.CloseHandle(hMutex)
 		windows.UnmapViewOfFile(ptr)
@@ -287,7 +287,7 @@ func (m *Manager) OpenWriter() error {
 		return fmt.Errorf("create event want: %w", err)
 	}
 
-	hEventSent, err := windows.CreateEvent(nil, false, false, eventSentName)
+	hEventSent, err := windows.CreateEvent(nil, 0, 0, eventSentName)
 	if err != nil {
 		windows.CloseHandle(hEventWant)
 		windows.CloseHandle(hMutex)
