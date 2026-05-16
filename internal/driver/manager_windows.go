@@ -14,6 +14,8 @@ import (
 
 	"rtsp-virtual-cam-agent/internal/config"
 	"rtsp-virtual-cam-agent/internal/logging"
+
+	"golang.org/x/sys/windows"
 )
 
 type Manager struct {
@@ -35,6 +37,11 @@ func (m *Manager) EnsureInstalled(ctx context.Context) error {
 		return nil
 	}
 
+	// We need to register the driver, check for admin rights first
+	if !isAdmin() {
+		return errors.New("Virtual camera driver is not registered. Please run the application as Administrator once, or use the setup installer to register the driver.")
+	}
+
 	// Try multiple locations for the UnityCapture DLL
 	candidates := []string{
 		"third_party/driver/virtual-camera-installer.dll",
@@ -45,7 +52,7 @@ func (m *Manager) EnsureInstalled(ctx context.Context) error {
 		dllPath := m.resolve(candidate)
 		if _, err := os.Stat(dllPath); err == nil {
 			m.logger.Printf("registering virtual camera filter: %s", dllPath)
-			// regsvr32 /s requires admin, which the app should have if it got this far or via the installer
+			// regsvr32 /s requires admin
 			cmd := exec.CommandContext(ctx, "regsvr32", "/s", dllPath)
 			if err := cmd.Run(); err != nil {
 				return fmt.Errorf("register filter (%s): %w", dllPath, err)
@@ -64,6 +71,29 @@ func (m *Manager) EnsureInstalled(ctx context.Context) error {
 	}
 
 	return errors.New("virtual camera driver not found and no installer available. Please run the setup installer as Administrator.")
+}
+
+func isAdmin() bool {
+	var sid *windows.SID
+	err := windows.AllocateAndInitializeSid(
+		&windows.SECURITY_NT_AUTHORITY,
+		2,
+		windows.SECURITY_BUILTIN_DOMAIN_RID,
+		windows.DOMAIN_ALIAS_RID_ADMINS,
+		0, 0, 0, 0, 0, 0,
+		&sid,
+	)
+	if err != nil {
+		return false
+	}
+	defer windows.FreeSid(sid)
+
+	token := windows.Token(0)
+	member, err := token.IsMember(sid)
+	if err != nil {
+		return false
+	}
+	return member
 }
 
 func (m *Manager) VirtualCameraPresent(ctx context.Context) (bool, error) {
