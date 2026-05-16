@@ -9,6 +9,9 @@ $DriverDll = Join-Path $RepoRoot 'internal/assets/third_party/driver/virtual-cam
 $BridgeExe = Join-Path $RepoRoot 'internal/assets/third_party/driver/virtual-camera-bridge.exe'
 
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+if (Test-Path $DistDir) {
+    Remove-Item -Path "$DistDir\*" -Recurse -Force -ErrorAction SilentlyContinue
+}
 New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
 
 if (-not (Test-Path $FfmpegPath)) { 
