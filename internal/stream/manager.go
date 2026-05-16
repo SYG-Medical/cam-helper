@@ -415,7 +415,11 @@ func (m *Manager) forwardFrames(ctx context.Context, r io.Reader) {
 		}
 
 		if err := m.driver.WriteFrame(cfg.Width, cfg.Height, buf); err != nil {
-			m.logger.Printf("write frame error: %v", err)
+			// ErrNoConsumer is expected when no app has the virtual camera
+			// open yet — suppress it to avoid log spam.
+			if !errors.Is(err, driver.ErrNoConsumer) {
+				m.logger.Printf("write frame error: %v", err)
+			}
 		}
 	}
 }

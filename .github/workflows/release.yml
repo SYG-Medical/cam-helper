@@ -77,6 +77,18 @@ jobs:
       - name: Install NSIS
         run: choco install nsis -y
 
+      - name: Compile manifest resource (UAC elevation)
+        shell: bash
+        run: |
+          # windows-latest runners include MinGW windres at C:/mingw64/bin
+          WINDRES="C:/mingw64/bin/windres.exe"
+          if [ ! -f "$WINDRES" ]; then
+            # fallback: try PATH
+            WINDRES="windres"
+          fi
+          "$WINDRES" cmd/app/resource.rc -O coff -o cmd/app/resource_windows_amd64.syso
+          echo "Manifest resource compiled OK"
+
       - name: Build Windows Installer
         shell: pwsh
         run: |

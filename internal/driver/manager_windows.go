@@ -348,6 +348,11 @@ func (m *Manager) CloseWriter() {
 	m.writer = nil
 }
 
+// ErrNoConsumer is returned when the virtual camera filter is not yet
+// consuming frames (e.g. the DirectShow filter hasn't opened the device).
+// Callers should treat this as a transient, non-fatal condition.
+var ErrNoConsumer = errors.New("virtual camera has no consumer yet")
+
 func (m *Manager) WriteFrame(width, height int, pix []byte) error {
 	if m.writer == nil {
 		if err := m.OpenWriter(); err != nil {
@@ -360,26 +365,39 @@ func (m *Manager) WriteFrame(width, height int, pix []byte) error {
 		return errors.New("frame too large")
 	}
 
-	// Wait for mutex
-	s, err := windows.WaitForSingleObject(w.mutex, 500)
-	if err != nil || s != windows.WAIT_OBJECT_0 {
-		return fmt.Errorf("wait for mutex: %v (status %d, last error: %v)", err, s, windows.GetLastError())
+	// Wait for the DirectShow filter to release the mutex.
+	// WAIT_OBJECT_0  (0)    – we own it, proceed.
+	// WAIT_ABANDONED (0x80) – previous owner (filter) died; ownership is
+	//                         still transferred to us so we MUST release.
+	// WAIT_TIMEOUT   (258)  – no consumer has opened the device yet; skip
+	//                         this frame without logging noise.
+	s, err := windows.WaitForSingleObject(w.mutex, 100)
+	switch {
+	case err != nil:
+		return fmt.Errorf("wait for mutex: %w", err)
+	case s == windows.WAIT_OBJECT_0, s == windows.WAIT_ABANDONED:
+		// We own the mutex — always release it when done.
+		defer func() {
+			if rerr := windows.ReleaseMutex(w.mutex); rerr != nil {
+				m.logger.Printf("release mutex error: %v", rerr)
+			}
+		}()
+	case s == uint32(windows.WAIT_TIMEOUT):
+		// Filter not running yet; silently drop the frame.
+		return ErrNoConsumer
+	default:
+		return fmt.Errorf("wait for mutex: unexpected status %d", s)
 	}
-	defer func() {
-		if err := windows.ReleaseMutex(w.mutex); err != nil {
-			m.logger.Printf("release mutex error: %v", err)
-		}
-	}()
 
 	w.header.Width = int32(width)
 	w.header.Height = int32(height)
-	w.header.Stride = int32(width * 4) // Assuming BGRA
+	w.header.Stride = int32(width * 4) // BGRA: 4 bytes per pixel
 	w.header.Format = 0                // FORMAT_UINT8
 	w.header.Timeout = 1000
 
 	copy(w.buffer, pix)
 
-	// Pulse events
+	// Signal the filter that a new frame is ready.
 	windows.SetEvent(w.eventSent)
 
 	return nil

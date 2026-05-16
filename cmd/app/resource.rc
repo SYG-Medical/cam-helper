@@ -1,0 +1,3 @@
+/* Windows resource: embeds app.manifest for UAC requireAdministrator elevation.
+   Compiled: windres resource.rc -O coff -o resource_windows_amd64.syso */
+1 24 "app.manifest"

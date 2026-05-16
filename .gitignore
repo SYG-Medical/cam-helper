@@ -4,6 +4,7 @@ out/
 AppDir/
 *.exe
 *.dll
+*.syso
 *.log
 *.tmp
 vendor/
