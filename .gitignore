@@ -1,0 +1,15 @@
+bin/
+dist/
+out/
+*.exe
+*.dll
+*.log
+*.tmp
+vendor/
+coverage.out
+third_party/ffmpeg/*
+!third_party/ffmpeg/.gitkeep
+third_party/driver/*
+!third_party/driver/.gitkeep
+.cache/
+build/

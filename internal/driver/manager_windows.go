@@ -1,0 +1,124 @@
+//go:build windows
+
+package driver
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"syscall"
+
+	"rtsp-virtual-cam-agent/internal/config"
+	"rtsp-virtual-cam-agent/internal/logging"
+)
+
+type Manager struct {
+	cfg    config.Config
+	root   string
+	logger *logging.Logger
+}
+
+func New(cfg config.Config, logger *logging.Logger) (*Manager, error) {
+	root, err := executableRoot()
+	if err != nil {
+		return nil, err
+	}
+	return &Manager{cfg: cfg, root: root, logger: logger}, nil
+}
+
+func (m *Manager) EnsureInstalled(ctx context.Context) error {
+	if ok, _ := m.VirtualCameraPresent(ctx); ok {
+		return nil
+	}
+
+	installer := m.resolve(m.cfg.DriverInstaller)
+	if _, err := os.Stat(installer); err != nil {
+		return fmt.Errorf("virtual camera installer not found: %s", installer)
+	}
+
+	m.logger.Printf("driver not detected, running installer: %s", installer)
+	cmd := exec.CommandContext(ctx, installer, "/S")
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	output, err := cmd.CombinedOutput()
+	if len(output) > 0 {
+		m.logger.Printf("driver installer output: %s", strings.TrimSpace(string(output)))
+	}
+	if err != nil {
+		return fmt.Errorf("run installer: %w", err)
+	}
+	return nil
+}
+
+func (m *Manager) VirtualCameraPresent(ctx context.Context) (bool, error) {
+	if m.cfg.TargetVirtualCamera == "" {
+		return false, errors.New("target virtual camera is empty")
+	}
+
+	script := fmt.Sprintf(`Get-PnpDevice -Class Camera,Image | Where-Object { $_.FriendlyName -like '*%s*' } | Select-Object -ExpandProperty FriendlyName`, escapePowerShellLike(m.cfg.TargetVirtualCamera))
+	cmd := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	out, err := cmd.Output()
+	if err != nil {
+		return false, fmt.Errorf("query cameras: %w", err)
+	}
+
+	return strings.TrimSpace(string(out)) != "", nil
+}
+
+func (m *Manager) UpdateConfig(cfg config.Config) {
+	m.cfg = cfg
+}
+
+func (m *Manager) BridgePath() string {
+	return m.resolve(m.cfg.DriverBridge)
+}
+
+func (m *Manager) StartBridge(ctx context.Context) (*exec.Cmd, error) {
+	bridge := m.BridgePath()
+	if _, err := os.Stat(bridge); err != nil {
+		return nil, fmt.Errorf("virtual camera bridge not found: %s", bridge)
+	}
+
+	args := []string{
+		"--camera-name", m.cfg.TargetVirtualCamera,
+		"--listen", fmt.Sprintf("udp://127.0.0.1:%d", m.cfg.BridgePort),
+		"--width", fmt.Sprintf("%d", m.cfg.Width),
+		"--height", fmt.Sprintf("%d", m.cfg.Height),
+		"--fps", fmt.Sprintf("%d", m.cfg.FPS),
+	}
+
+	cmd := exec.CommandContext(ctx, bridge, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	return cmd, nil
+}
+
+func (m *Manager) UseBridge() bool {
+	return true
+}
+
+func (m *Manager) FFmpegOutputTarget() string {
+	return fmt.Sprintf("udp://127.0.0.1:%d?pkt_size=1316", m.cfg.BridgePort)
+}
+
+func (m *Manager) resolve(candidate string) string {
+	if filepath.IsAbs(candidate) {
+		return candidate
+	}
+	return filepath.Join(m.root, filepath.FromSlash(candidate))
+}
+
+func executableRoot() (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("resolve executable: %w", err)
+	}
+	return filepath.Dir(exe), nil
+}
+
+func escapePowerShellLike(value string) string {
+	return strings.ReplaceAll(value, "'", "''")
+}

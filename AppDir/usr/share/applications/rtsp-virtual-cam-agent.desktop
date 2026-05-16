@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=RTSP Virtual Cam Agent
+Comment=RTSP to virtual webcam launcher
+Exec=rtsp-virtual-cam-agent-launcher
+Icon=rtsp-virtual-cam-agent
+Categories=AudioVideo;Utility;
+Terminal=false
