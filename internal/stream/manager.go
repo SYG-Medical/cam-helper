@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 	"sync"
 	"time"
 
@@ -142,6 +141,30 @@ func (m *Manager) supervise(ctx context.Context) {
 			bridgeStarted = true
 		}
 
+		useBuiltinWriter := !m.driver.UseBridge() && runtime.GOOS == "windows"
+		if useBuiltinWriter {
+			stdout, err := ffmpegCmd.StdoutPipe()
+			if err != nil {
+				m.recordError(fmt.Errorf("ffmpeg stdout pipe: %w", err))
+				if bridgeStarted {
+					_ = bridgeCmd.Process.Kill()
+				}
+				if !sleepOrDone(ctx, 8*time.Second) {
+					return
+				}
+				continue
+			}
+			go m.forwardFrames(ctx, stdout)
+
+			// Still attach stderr logs
+			stderr, err := ffmpegCmd.StderrPipe()
+			if err == nil {
+				go scanPipe("ffmpeg stderr", stderr, m.logger)
+			}
+		} else {
+			attachLogs("ffmpeg", ffmpegCmd, m.logger)
+		}
+
 		m.logger.Printf("starting ffmpeg: %s", strings.Join(ffmpegCmd.Args, " "))
 		if err := ffmpegCmd.Start(); err != nil {
 			if bridgeStarted && bridgeCmd.Process != nil {
@@ -212,7 +235,6 @@ func (m *Manager) preparePipeline(ctx context.Context) (*exec.Cmd, *exec.Cmd, er
 	if err != nil {
 		return nil, nil, err
 	}
-	attachLogs("ffmpeg", ffmpegCmd, m.logger)
 
 	return bridgeCmd, ffmpegCmd, nil
 }
@@ -246,10 +268,10 @@ func (m *Manager) buildFFmpegCommand(ctx context.Context) (*exec.Cmd, error) {
 		)
 	} else {
 		if runtime.GOOS == "windows" {
-			// On Windows, use dshow for direct output if bridge is disabled
+			// On Windows, use rawvideo for builtin bridge
 			args = append(args,
-				"-pix_fmt", "yuv420p",
-				"-f", "dshow",
+				"-pix_fmt", "bgra",
+				"-f", "rawvideo",
 				m.driver.FFmpegOutputTarget(),
 			)
 		} else {
@@ -262,9 +284,7 @@ func (m *Manager) buildFFmpegCommand(ctx context.Context) (*exec.Cmd, error) {
 	}
 
 	cmd := exec.CommandContext(ctx, path, args...)
-	if runtime.GOOS == "windows" {
-		cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	}
+	setHideWindow(cmd)
 	return cmd, nil
 }
 
@@ -368,5 +388,34 @@ func scanPipe(prefix string, r io.Reader, logger *logging.Logger) {
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		logger.Printf("%s: %s", prefix, scanner.Text())
+	}
+}
+
+func (m *Manager) forwardFrames(ctx context.Context, r io.Reader) {
+	m.mu.Lock()
+	cfg := m.cfg
+	m.mu.Unlock()
+
+	frameSize := cfg.Width * cfg.Height * 4
+	buf := make([]byte, frameSize)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		_, err := io.ReadFull(r, buf)
+		if err != nil {
+			if err != io.EOF && !errors.Is(err, os.ErrClosed) {
+				m.logger.Printf("frame reader error: %v", err)
+			}
+			return
+		}
+
+		if err := m.driver.WriteFrame(cfg.Width, cfg.Height, buf); err != nil {
+			m.logger.Printf("write frame error: %v", err)
+		}
 	}
 }

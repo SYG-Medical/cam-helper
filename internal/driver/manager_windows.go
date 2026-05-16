@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"unsafe"
+	"reflect"
 
 	"rtsp-virtual-cam-agent/internal/config"
 	"rtsp-virtual-cam-agent/internal/logging"
@@ -19,10 +21,36 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
+const (
+	MaxSharedImageSize = 3840 * 2160 * 4 // Support up to 4K ARGB
+)
+
 type Manager struct {
 	cfg    config.Config
 	root   string
 	logger *logging.Logger
+	writer *UnityWriter
+}
+
+type UnityWriter struct {
+	mapping      windows.Handle
+	mutex        windows.Handle
+	eventWant    windows.Handle
+	eventSent    windows.Handle
+	buffer       []byte
+	header       *sharedMemHeader
+	maxFrameSize int
+}
+
+type sharedMemHeader struct {
+	MaxSize    uint32
+	Width      int32
+	Height     int32
+	Stride     int32
+	Format     int32
+	ResizeMode int32
+	MirrorMode int32
+	Timeout    int32
 }
 
 func New(cfg config.Config, logger *logging.Logger) (*Manager, error) {
@@ -212,9 +240,128 @@ func (m *Manager) FFmpegOutputTarget() string {
 	if m.UseBridge() {
 		return fmt.Sprintf("udp://127.0.0.1:%d?pkt_size=1316", m.cfg.BridgePort)
 	}
-	// Fallback to DirectShow output if bridge is missing
-	// Note: This requires a DirectShow sink filter named exactly like TargetVirtualCamera
-	return fmt.Sprintf("video=%s", m.cfg.TargetVirtualCamera)
+	// Built-in mode uses pipe
+	return "-"
+}
+
+func (m *Manager) OpenWriter() error {
+	if m.writer != nil {
+		return nil
+	}
+
+	capNum := 0 // Default to device 0
+	suffix := ""
+	if capNum > 0 {
+		suffix = fmt.Sprintf("%d", capNum)
+	}
+
+	mutexName, _ := windows.UTF16PtrFromString("UnityCapture_Mutx" + suffix)
+	eventWantName, _ := windows.UTF16PtrFromString("UnityCapture_Want" + suffix)
+	eventSentName, _ := windows.UTF16PtrFromString("UnityCapture_Sent" + suffix)
+	dataName, _ := windows.UTF16PtrFromString("UnityCapture_Data" + suffix)
+
+	// Create/Open mapping
+	hMapping, err := windows.CreateFileMapping(windows.InvalidHandle, nil, windows.PAGE_READWRITE, 0, uint32(unsafe.Sizeof(sharedMemHeader{})+MaxSharedImageSize), dataName)
+	if err != nil {
+		return fmt.Errorf("create file mapping: %w", err)
+	}
+
+	ptr, err := windows.MapViewOfFile(hMapping, windows.FILE_MAP_WRITE, 0, 0, 0)
+	if err != nil {
+		windows.CloseHandle(hMapping)
+		return fmt.Errorf("map view of file: %w", err)
+	}
+
+	hMutex, err := windows.CreateMutex(nil, false, mutexName)
+	if err != nil {
+		windows.UnmapViewOfFile(ptr)
+		windows.CloseHandle(hMapping)
+		return fmt.Errorf("create mutex: %w", err)
+	}
+
+	hEventWant, err := windows.CreateEvent(nil, false, false, eventWantName)
+	if err != nil {
+		windows.CloseHandle(hMutex)
+		windows.UnmapViewOfFile(ptr)
+		windows.CloseHandle(hMapping)
+		return fmt.Errorf("create event want: %w", err)
+	}
+
+	hEventSent, err := windows.CreateEvent(nil, false, false, eventSentName)
+	if err != nil {
+		windows.CloseHandle(hEventWant)
+		windows.CloseHandle(hMutex)
+		windows.UnmapViewOfFile(ptr)
+		windows.CloseHandle(hMapping)
+		return fmt.Errorf("create event sent: %w", err)
+	}
+
+	header := (*sharedMemHeader)(unsafe.Pointer(ptr))
+	header.MaxSize = uint32(MaxSharedImageSize)
+
+	// Create a slice that points to the data area
+	dataPtr := ptr + unsafe.Sizeof(sharedMemHeader{})
+	var dataSlice []byte
+	sh := (*reflect.SliceHeader)(unsafe.Pointer(&dataSlice))
+	sh.Data = dataPtr
+	sh.Len = MaxSharedImageSize
+	sh.Cap = MaxSharedImageSize
+
+	m.writer = &UnityWriter{
+		mapping:   hMapping,
+		mutex:     hMutex,
+		eventWant: hEventWant,
+		eventSent: hEventSent,
+		buffer:    dataSlice,
+		header:    header,
+	}
+
+	return nil
+}
+
+func (m *Manager) CloseWriter() {
+	if m.writer == nil {
+		return
+	}
+	windows.CloseHandle(m.writer.eventSent)
+	windows.CloseHandle(m.writer.eventWant)
+	windows.CloseHandle(m.writer.mutex)
+	windows.UnmapViewOfFile(uintptr(unsafe.Pointer(m.writer.header)))
+	windows.CloseHandle(m.writer.mapping)
+	m.writer = nil
+}
+
+func (m *Manager) WriteFrame(width, height int, pix []byte) error {
+	if m.writer == nil {
+		if err := m.OpenWriter(); err != nil {
+			return err
+		}
+	}
+
+	w := m.writer
+	if len(pix) > MaxSharedImageSize {
+		return errors.New("frame too large")
+	}
+
+	// Wait for mutex
+	s, err := windows.WaitForSingleObject(w.mutex, 1000)
+	if err != nil || s != windows.WAIT_OBJECT_0 {
+		return fmt.Errorf("wait for mutex: %v (status %d)", err, s)
+	}
+	defer windows.ReleaseMutex(w.mutex)
+
+	w.header.Width = int32(width)
+	w.header.Height = int32(height)
+	w.header.Stride = int32(width * 4) // Assuming BGRA
+	w.header.Format = 0                // FORMAT_UINT8
+	w.header.Timeout = 1000
+
+	copy(w.buffer, pix)
+
+	// Pulse events
+	windows.SetEvent(w.eventSent)
+
+	return nil
 }
 
 func (m *Manager) resolve(candidate string) string {
