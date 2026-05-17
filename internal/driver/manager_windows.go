@@ -41,6 +41,8 @@ type UnityWriter struct {
 	buffer       []byte
 	header       *sharedMemHeader
 	maxFrameSize int
+	lastStatus   uint32
+	statusCount  int
 }
 
 type sharedMemHeader struct {
@@ -286,9 +288,12 @@ func (m *Manager) OpenWriter() error {
 	eventSentName, _ := windows.UTF16PtrFromString("Global\\UnityCapture_Sent" + suffix)
 	dataName, _ := windows.UTF16PtrFromString("Global\\UnityCapture_Data" + suffix)
 
+	m.logger.Printf("OpenWriter: attempting to open Global namespace with suffix %q", suffix)
+
 	// Create/Open mapping
 	hMapping, err := windows.CreateFileMapping(windows.InvalidHandle, nil, windows.PAGE_READWRITE, 0, uint32(unsafe.Sizeof(sharedMemHeader{})+MaxSharedImageSize), dataName)
 	if err != nil {
+		m.logger.Printf("OpenWriter: Global namespace failed, falling back to local namespace: %v", err)
 		// Try without Global prefix if Global fails (e.g. no permission)
 		mutexName, _ = windows.UTF16PtrFromString("UnityCapture_Mutx" + suffix)
 		eventWantName, _ = windows.UTF16PtrFromString("UnityCapture_Want" + suffix)
@@ -355,13 +360,16 @@ func (m *Manager) OpenWriter() error {
 	sh.Cap = MaxSharedImageSize
 
 	m.writer = &UnityWriter{
-		mapping:   hMapping,
-		mutex:     hMutex,
-		eventWant: hEventWant,
-		eventSent: hEventSent,
-		buffer:    dataSlice,
-		header:    header,
+		mapping:    hMapping,
+		mutex:      hMutex,
+		eventWant:  hEventWant,
+		eventSent:  hEventSent,
+		buffer:     dataSlice,
+		header:     header,
+		lastStatus: 999,
 	}
+
+	m.logger.Printf("OpenWriter: successfully initialized shared memory writer for suffix %q", suffix)
 
 	return nil
 }
@@ -402,6 +410,15 @@ func (m *Manager) WriteFrame(width, height int, pix []byte) error {
 	// WAIT_TIMEOUT   (258)  – no consumer has opened the device yet; skip
 	//                         this frame without logging noise.
 	s, err := windows.WaitForSingleObject(w.mutex, 100)
+
+	if s != w.lastStatus || w.statusCount >= 300 {
+		m.logger.Printf("WriteFrame: wait for mutex returned status %d (count %d), err: %v", s, w.statusCount, err)
+		w.lastStatus = s
+		w.statusCount = 0
+	} else {
+		w.statusCount++
+	}
+
 	switch {
 	case err != nil:
 		return fmt.Errorf("wait for mutex: %w", err)
