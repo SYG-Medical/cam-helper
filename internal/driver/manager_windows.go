@@ -93,6 +93,10 @@ func (m *Manager) EnsureInstalled(ctx context.Context) error {
 			if err := cmd.Run(); err != nil {
 				return fmt.Errorf("register filter (%s): %w", dllPath, err)
 			}
+			// Override DirectShow friendly name in HKLM after successful registration
+			if m.cfg.TargetVirtualCamera != "" {
+				m.overrideDirectShowFriendlyName(m.cfg.TargetVirtualCamera)
+			}
 			return nil
 		}
 	}
@@ -155,8 +159,8 @@ func (m *Manager) VirtualCameraPresent(ctx context.Context) (bool, error) {
 }
 
 func (m *Manager) checkFilterInRegistry(name string) bool {
-	// DirectShow Video Input Category
-	const videoInputCat = `SOFTWARE\Microsoft\ActiveMovie\devenum\{860BB310-5D01-11D0-BD3B-00A0C911CE86}`
+	// DirectShow Video Input Category ground truth COM path
+	const videoInputCat = `SOFTWARE\Classes\CLSID\{860BB310-5D01-11D0-BD3B-00A0C911CE86}\Instance`
 
 	// Check both HKLM and HKCU
 	roots := []registry.Key{registry.LOCAL_MACHINE, registry.CURRENT_USER}
@@ -165,10 +169,10 @@ func (m *Manager) checkFilterInRegistry(name string) bool {
 		if err != nil {
 			continue
 		}
-		defer k.Close()
-
+		
 		subkeys, err := k.ReadSubKeyNames(-1)
 		if err != nil {
+			k.Close()
 			continue
 		}
 
@@ -180,9 +184,11 @@ func (m *Manager) checkFilterInRegistry(name string) bool {
 			friendlyName, _, err := sk.GetStringValue("FriendlyName")
 			sk.Close()
 			if err == nil && strings.Contains(strings.ToLower(friendlyName), strings.ToLower(name)) {
+				k.Close()
 				return true
 			}
 		}
+		k.Close()
 	}
 	return false
 }
@@ -195,6 +201,25 @@ func (m *Manager) configureUnityCaptureName(name string) {
 	}
 	defer k.Close()
 	_ = k.SetStringValue("DeviceName", name)
+}
+
+func (m *Manager) overrideDirectShowFriendlyName(name string) {
+	// UnityCapture CLSID is {5C2CD55C-92AD-4999-8666-912BD3E70010}
+	const unityCaptureInstance = `SOFTWARE\Classes\CLSID\{860BB310-5D01-11D0-BD3B-00A0C911CE86}\Instance\{5C2CD55C-92AD-4999-8666-912BD3E70010}`
+	
+	// Open with write permissions to set the FriendlyName
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, unityCaptureInstance, registry.SET_VALUE)
+	if err != nil {
+		m.logger.Printf("warning: failed to open registry to override friendly name: %v", err)
+		return
+	}
+	defer k.Close()
+	
+	if err := k.SetStringValue("FriendlyName", name); err != nil {
+		m.logger.Printf("warning: failed to set FriendlyName in registry: %v", err)
+	} else {
+		m.logger.Printf("successfully renamed DirectShow virtual camera filter to: %s", name)
+	}
 }
 
 func (m *Manager) UpdateConfig(cfg config.Config) {
