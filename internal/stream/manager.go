@@ -2,10 +2,14 @@ package stream
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"image"
+	"image/jpeg"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -37,10 +41,24 @@ type Manager struct {
 	restartCount uint64
 	onFrame      func(width, height int, pix []byte)
 	onFrameMu    sync.Mutex
+
+	// HTTP MJPEG Server fields
+	httpServer  *http.Server
+	listeners   map[chan []byte]bool
+	listenersMu sync.Mutex
+	rgbaImg     *image.RGBA
+	rgbaImgMu   sync.Mutex
 }
 
 func New(cfg config.Config, logger *logging.Logger, drv *driver.Manager) *Manager {
-	return &Manager{cfg: cfg, logger: logger, driver: drv}
+	m := &Manager{
+		cfg:       cfg,
+		logger:    logger,
+		driver:    drv,
+		listeners: make(map[chan []byte]bool),
+	}
+	m.startHTTPServer()
+	return m
 }
 
 func (m *Manager) SetOnFrame(cb func(width, height int, pix []byte)) {
@@ -430,6 +448,8 @@ func (m *Manager) forwardFrames(ctx context.Context, r io.Reader) {
 			}
 		}
 
+		m.broadcastFrame(cfg.Width, cfg.Height, buf)
+
 		m.onFrameMu.Lock()
 		cb := m.onFrame
 		m.onFrameMu.Unlock()
@@ -437,4 +457,113 @@ func (m *Manager) forwardFrames(ctx context.Context, r io.Reader) {
 			cb(cfg.Width, cfg.Height, append([]byte(nil), buf...))
 		}
 	}
+}
+
+func (m *Manager) broadcastFrame(width, height int, pix []byte) {
+	m.rgbaImgMu.Lock()
+	if m.rgbaImg == nil || m.rgbaImg.Rect.Dx() != width || m.rgbaImg.Rect.Dy() != height {
+		m.rgbaImg = image.NewRGBA(image.Rect(0, 0, width, height))
+	}
+	// Convert BGRA to RGBA
+	for i := 0; i < len(pix); i += 4 {
+		m.rgbaImg.Pix[i]   = pix[i+2] // R
+		m.rgbaImg.Pix[i+1] = pix[i+1] // G
+		m.rgbaImg.Pix[i+2] = pix[i]   // B
+		m.rgbaImg.Pix[i+3] = pix[i+3] // A
+	}
+
+	var buf bytes.Buffer
+	err := jpeg.Encode(&buf, m.rgbaImg, &jpeg.Options{Quality: 75})
+	m.rgbaImgMu.Unlock()
+
+	if err != nil {
+		return
+	}
+
+	jpegBytes := buf.Bytes()
+
+	m.listenersMu.Lock()
+	defer m.listenersMu.Unlock()
+	for ch := range m.listeners {
+		select {
+		case ch <- jpegBytes:
+		default:
+			// Client slow, drop frame
+		}
+	}
+}
+
+func (m *Manager) startHTTPServer() {
+	port := m.cfg.BridgePort
+	if port <= 0 {
+		port = 18080
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"status":"ok","service":"SYG RTSP Agent"}`))
+	})
+
+	mux.HandleFunc("/stream", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+		w.Header().Set("Cache-Control", "no-cache, private, max-age=0, no-transform, no-store, must-revalidate")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Expires", "0")
+
+		ch := make(chan []byte, 5)
+		m.listenersMu.Lock()
+		m.listeners[ch] = true
+		m.listenersMu.Unlock()
+
+		defer func() {
+			m.listenersMu.Lock()
+			delete(m.listeners, ch)
+			m.listenersMu.Unlock()
+			close(ch)
+		}()
+
+		cn := r.Context()
+
+		for {
+			select {
+			case <-cn.Done():
+				return
+			case jpegBytes, ok := <-ch:
+				if !ok {
+					return
+				}
+				_, err := fmt.Fprintf(w, "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n", len(jpegBytes))
+				if err != nil {
+					return
+				}
+				_, err = w.Write(jpegBytes)
+				if err != nil {
+					return
+				}
+				_, err = w.Write([]byte("\r\n"))
+				if err != nil {
+					return
+				}
+				if flusher, ok := w.(http.Flusher); ok {
+					flusher.Flush()
+				}
+			}
+		}
+	})
+
+	m.httpServer = &http.Server{
+		Addr:    fmt.Sprintf(":%d", port),
+		Handler: mux,
+	}
+
+	m.logger.Printf("Starting HTTP MJPEG server on port %d...", port)
+	go func() {
+		if err := m.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			m.logger.Printf("HTTP server error: %v", err)
+		}
+	}()
 }
