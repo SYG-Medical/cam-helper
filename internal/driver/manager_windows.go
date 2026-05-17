@@ -288,10 +288,14 @@ func (m *Manager) OpenWriter() error {
 	eventSentName, _ := windows.UTF16PtrFromString("Global\\UnityCapture_Sent" + suffix)
 	dataName, _ := windows.UTF16PtrFromString("Global\\UnityCapture_Data" + suffix)
 
-	m.logger.Printf("OpenWriter: attempting to open Global namespace with suffix %q", suffix)
+	sa, err := createNullDACLSecurityAttributes()
+	if err != nil {
+		m.logger.Printf("warning: failed to create null DACL security attributes: %v", err)
+		sa = nil // Fallback to default security descriptor
+	}
 
 	// Create/Open mapping
-	hMapping, err := windows.CreateFileMapping(windows.InvalidHandle, nil, windows.PAGE_READWRITE, 0, uint32(unsafe.Sizeof(sharedMemHeader{})+MaxSharedImageSize), dataName)
+	hMapping, err := windows.CreateFileMapping(windows.InvalidHandle, sa, windows.PAGE_READWRITE, 0, uint32(unsafe.Sizeof(sharedMemHeader{})+MaxSharedImageSize), dataName)
 	if err != nil {
 		m.logger.Printf("OpenWriter: Global namespace failed, falling back to local namespace: %v", err)
 		// Try without Global prefix if Global fails (e.g. no permission)
@@ -299,7 +303,7 @@ func (m *Manager) OpenWriter() error {
 		eventWantName, _ = windows.UTF16PtrFromString("UnityCapture_Want" + suffix)
 		eventSentName, _ = windows.UTF16PtrFromString("UnityCapture_Sent" + suffix)
 		dataName, _ = windows.UTF16PtrFromString("UnityCapture_Data" + suffix)
-		hMapping, err = windows.CreateFileMapping(windows.InvalidHandle, nil, windows.PAGE_READWRITE, 0, uint32(unsafe.Sizeof(sharedMemHeader{})+MaxSharedImageSize), dataName)
+		hMapping, err = windows.CreateFileMapping(windows.InvalidHandle, sa, windows.PAGE_READWRITE, 0, uint32(unsafe.Sizeof(sharedMemHeader{})+MaxSharedImageSize), dataName)
 		if err != nil {
 			return fmt.Errorf("create file mapping: %w", err)
 		}
@@ -311,14 +315,14 @@ func (m *Manager) OpenWriter() error {
 		return fmt.Errorf("map view of file: %w", err)
 	}
 
-	hMutex, err := windows.CreateMutex(nil, false, mutexName)
+	hMutex, err := windows.CreateMutex(sa, false, mutexName)
 	if err != nil && !errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
 		windows.UnmapViewOfFile(ptr)
 		windows.CloseHandle(hMapping)
 		return fmt.Errorf("create mutex: %w", err)
 	}
 
-	hEventWant, err := windows.CreateEvent(nil, 0, 0, eventWantName)
+	hEventWant, err := windows.CreateEvent(sa, 0, 0, eventWantName)
 	if err != nil && !errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
 		windows.CloseHandle(hMutex)
 		windows.UnmapViewOfFile(ptr)
@@ -326,7 +330,7 @@ func (m *Manager) OpenWriter() error {
 		return fmt.Errorf("create event want: %w", err)
 	}
 
-	hEventSent, err := windows.CreateEvent(nil, 0, 0, eventSentName)
+	hEventSent, err := windows.CreateEvent(sa, 0, 0, eventSentName)
 	if err != nil && !errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
 		windows.CloseHandle(hEventWant)
 		windows.CloseHandle(hMutex)
@@ -467,4 +471,32 @@ func executableRoot() (string, error) {
 
 func escapePowerShellLike(value string) string {
 	return strings.ReplaceAll(value, "'", "''")
+}
+
+var (
+	modadvapi32                      = windows.NewLazySystemDLL("advapi32.dll")
+	procInitializeSecurityDescriptor = modadvapi32.NewProc("InitializeSecurityDescriptor")
+	procSetSecurityDescriptorDacl    = modadvapi32.NewProc("SetSecurityDescriptorDacl")
+)
+
+func createNullDACLSecurityAttributes() (*windows.SecurityAttributes, error) {
+	var sd windows.SECURITY_DESCRIPTOR
+	
+	// InitializeSecurityDescriptor(&sd, 1)
+	r1, _, err := procInitializeSecurityDescriptor.Call(uintptr(unsafe.Pointer(&sd)), 1)
+	if r1 == 0 {
+		return nil, fmt.Errorf("InitializeSecurityDescriptor failed: %w", err)
+	}
+	
+	// SetSecurityDescriptorDacl(&sd, TRUE (1), nil (0), FALSE (0))
+	r1, _, err = procSetSecurityDescriptorDacl.Call(uintptr(unsafe.Pointer(&sd)), 1, 0, 0)
+	if r1 == 0 {
+		return nil, fmt.Errorf("SetSecurityDescriptorDacl failed: %w", err)
+	}
+	
+	var sa windows.SecurityAttributes
+	sa.Length = uint32(unsafe.Sizeof(sa))
+	sa.SecurityDescriptor = &sd
+	sa.InheritHandle = 0
+	return &sa, nil
 }
