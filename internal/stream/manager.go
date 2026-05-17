@@ -167,7 +167,7 @@ func (m *Manager) supervise(ctx context.Context) {
 			bridgeStarted = true
 		}
 
-		useBuiltinWriter := !m.driver.UseBridge() && runtime.GOOS == "windows"
+		useBuiltinWriter := !m.driver.UseBridge()
 		if useBuiltinWriter {
 			stdout, err := ffmpegCmd.StdoutPipe()
 			if err != nil {
@@ -301,10 +301,14 @@ func (m *Manager) buildFFmpegCommand(ctx context.Context) (*exec.Cmd, error) {
 				m.driver.FFmpegOutputTarget(),
 			)
 		} else {
+			// On Linux, we output to both:
+			// 1. The v4l2 device (using yuv420p format)
+			// 2. stdout (using bgra rawvideo format) so Go can read it for live preview and MJPEG HTTP server
 			args = append(args,
 				"-pix_fmt", "yuv420p",
-				"-f", "v4l2",
-				m.driver.FFmpegOutputTarget(),
+				"-f", "v4l2", m.driver.FFmpegOutputTarget(),
+				"-pix_fmt", "bgra",
+				"-f", "rawvideo", "-",
 			)
 		}
 	}
