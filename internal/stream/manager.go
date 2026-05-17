@@ -35,10 +35,18 @@ type Manager struct {
 	wg           sync.WaitGroup
 	state        State
 	restartCount uint64
+	onFrame      func(width, height int, pix []byte)
+	onFrameMu    sync.Mutex
 }
 
 func New(cfg config.Config, logger *logging.Logger, drv *driver.Manager) *Manager {
 	return &Manager{cfg: cfg, logger: logger, driver: drv}
+}
+
+func (m *Manager) SetOnFrame(cb func(width, height int, pix []byte)) {
+	m.onFrameMu.Lock()
+	m.onFrame = cb
+	m.onFrameMu.Unlock()
 }
 
 func (m *Manager) Start() error {
@@ -253,8 +261,7 @@ func (m *Manager) buildFFmpegCommand(ctx context.Context) (*exec.Cmd, error) {
 		"-hide_banner",
 		"-loglevel", "warning",
 		"-rtsp_transport", "tcp",
-		"-fflags", "+genpts+nobuffer+discardcorrupt",
-		"-err_detect", "ignore_err",
+		"-fflags", "+genpts",
 		"-thread_queue_size", "1024",
 		"-i", cfg.RTSPURL,
 		"-an",
@@ -421,6 +428,13 @@ func (m *Manager) forwardFrames(ctx context.Context, r io.Reader) {
 			if !errors.Is(err, driver.ErrNoConsumer) {
 				m.logger.Printf("write frame error: %v", err)
 			}
+		}
+
+		m.onFrameMu.Lock()
+		cb := m.onFrame
+		m.onFrameMu.Unlock()
+		if cb != nil {
+			cb(cfg.Width, cfg.Height, append([]byte(nil), buf...))
 		}
 	}
 }

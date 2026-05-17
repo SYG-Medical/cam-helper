@@ -3,6 +3,7 @@ package tray
 import (
 	_ "embed"
 	"fmt"
+	"image"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/driver/desktop"
@@ -39,6 +41,10 @@ type App struct {
 	mu       sync.Mutex
 
 	statusLabel *widget.Label
+
+	previewWin  fyne.Window
+	previewImg  *canvas.Image
+	rgbaImg     *image.RGBA
 }
 
 func New() (*App, error) {
@@ -75,6 +81,31 @@ func New() (*App, error) {
 
 	appObj.setupUI()
 	appObj.setupTray()
+
+	streamer.SetOnFrame(func(width, height int, pix []byte) {
+		appObj.mu.Lock()
+		imgWidget := appObj.previewImg
+		if imgWidget == nil {
+			appObj.mu.Unlock()
+			return
+		}
+
+		if appObj.rgbaImg == nil || appObj.rgbaImg.Rect.Dx() != width || appObj.rgbaImg.Rect.Dy() != height {
+			appObj.rgbaImg = image.NewRGBA(image.Rect(0, 0, width, height))
+			imgWidget.Image = appObj.rgbaImg
+		}
+
+		// Convert BGRA -> RGBA into the pre-allocated reusable texture buffer
+		for i := 0; i < len(pix); i += 4 {
+			appObj.rgbaImg.Pix[i]   = pix[i+2] // R
+			appObj.rgbaImg.Pix[i+1] = pix[i+1] // G
+			appObj.rgbaImg.Pix[i+2] = pix[i]   // B
+			appObj.rgbaImg.Pix[i+3] = pix[i+3] // A
+		}
+		appObj.mu.Unlock()
+
+		imgWidget.Refresh()
+	})
 
 	return appObj, nil
 }
@@ -133,7 +164,9 @@ func (a *App) setupUI() {
 			),
 			autostartCheck,
 			container.NewGridWithColumns(2, startBtn, stopBtn),
-			saveBtn,
+			container.NewGridWithColumns(2, saveBtn, widget.NewButtonWithIcon("Live Preview", theme.VisibilityIcon(), func() {
+				a.openPreview()
+			})),
 			widget.NewSeparator(),
 			widget.NewButtonWithIcon("Open Config", theme.SettingsIcon(), func() {
 				openPath(a.cfgPath)
@@ -235,4 +268,31 @@ func openPath(target string) {
 		return
 	}
 	_ = cmd.Start()
+}
+
+func (a *App) openPreview() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.previewWin != nil {
+		a.previewWin.RequestFocus()
+		return
+	}
+
+	w := a.fyneApp.NewWindow("SYG RTSP Camera Live Preview")
+	w.Resize(fyne.NewSize(640, 360))
+
+	img := canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, int(a.cfg.Width), int(a.cfg.Height))))
+	img.FillMode = canvas.ImageFillContain
+
+	w.SetContent(container.NewMax(img))
+	w.SetOnClosed(func() {
+		a.mu.Lock()
+		a.previewWin = nil
+		a.previewImg = nil
+		a.mu.Unlock()
+	})
+
+	a.previewWin = w
+	a.previewImg = img
+	w.Show()
 }
