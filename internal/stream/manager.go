@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha1"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"image"
@@ -46,8 +48,9 @@ type Manager struct {
 	httpServer  *http.Server
 	listeners   map[chan []byte]bool
 	listenersMu sync.Mutex
-	rgbaImg     *image.RGBA
-	rgbaImgMu   sync.Mutex
+	rgbaImg         *image.RGBA
+	rgbaImgMu       sync.Mutex
+	lastPreviewTime time.Time
 }
 
 func New(cfg config.Config, logger *logging.Logger, drv *driver.Manager) *Manager {
@@ -279,7 +282,10 @@ func (m *Manager) buildFFmpegCommand(ctx context.Context) (*exec.Cmd, error) {
 		"-hide_banner",
 		"-loglevel", "warning",
 		"-rtsp_transport", "tcp",
-		"-fflags", "+genpts",
+		"-probesize", "32",
+		"-analyzeduration", "0",
+		"-fflags", "nobuffer",
+		"-flags", "low_delay",
 		"-thread_queue_size", "1024",
 		"-i", cfg.RTSPURL,
 		"-an",
@@ -303,14 +309,15 @@ func (m *Manager) buildFFmpegCommand(ctx context.Context) (*exec.Cmd, error) {
 		} else {
 			// On Linux, we output to both:
 			// 1. The v4l2 device (using yuyv422 format for browser/WebRTC compatibility)
-			// 2. stdout (using bgra rawvideo format) so Go can read it for live preview and MJPEG HTTP server
-			// We must apply the scale and fps filter to BOTH outputs so that the stdout stream
-			// matches the width and height expected by our Go reader.
+			// 2. stdout (using rgba rawvideo format) so Go can read it for live preview and MJPEG HTTP server
+			// We use filter_complex to scale and set FPS only once, then split to both outputs for maximum performance.
 			args = append(args,
+				"-filter_complex", fmt.Sprintf("[0:v]fps=%d,scale=%d:%d:flags=fast_bilinear,split=2[v1][v2]", cfg.FPS, cfg.Width, cfg.Height),
+				"-map", "[v1]",
 				"-pix_fmt", "yuyv422",
 				"-f", "v4l2", m.driver.FFmpegOutputTarget(),
-				"-vf", fmt.Sprintf("scale=%d:%d,fps=%d", cfg.Width, cfg.Height, cfg.FPS),
-				"-pix_fmt", "bgra",
+				"-map", "[v2]",
+				"-pix_fmt", "rgba",
 				"-f", "rawvideo", "-",
 			)
 		}
@@ -430,8 +437,58 @@ func (m *Manager) forwardFrames(ctx context.Context, r io.Reader) {
 	m.mu.Unlock()
 
 	frameSize := cfg.Width * cfg.Height * 4
-	buf := make([]byte, frameSize)
 
+	// Double buffering structure to swap frames without allocations
+	var fb struct {
+		mu    sync.Mutex
+		data  []byte
+		fresh bool
+	}
+	fb.data = make([]byte, frameSize)
+
+	notifyChan := make(chan struct{}, 1)
+
+	// Spawn worker goroutine so we do not block the reader thread during processing/compression/writing
+	go func() {
+		workBuf := make([]byte, frameSize)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-notifyChan:
+				fb.mu.Lock()
+				if !fb.fresh {
+					fb.mu.Unlock()
+					continue
+				}
+				fb.data, workBuf = workBuf, fb.data
+				fb.fresh = false
+				fb.mu.Unlock()
+
+				// 1. Write frame to virtual camera driver
+				if err := m.driver.WriteFrame(cfg.Width, cfg.Height, workBuf); err != nil {
+					// ErrNoConsumer is expected when no app has the virtual camera open
+					if !errors.Is(err, driver.ErrNoConsumer) {
+						m.logger.Printf("write frame error: %v", err)
+					}
+				}
+
+				// 2. Broadcast to HTTP clients
+				m.broadcastFrame(cfg.Width, cfg.Height, workBuf)
+
+				// 3. Trigger live preview callback
+				m.onFrameMu.Lock()
+				cb := m.onFrame
+				m.onFrameMu.Unlock()
+				if cb != nil {
+					cb(cfg.Width, cfg.Height, workBuf)
+				}
+			}
+		}
+	}()
+
+	// Reader loop
+	readBuf := make([]byte, frameSize)
 	for {
 		select {
 		case <-ctx.Done():
@@ -439,7 +496,7 @@ func (m *Manager) forwardFrames(ctx context.Context, r io.Reader) {
 		default:
 		}
 
-		_, err := io.ReadFull(r, buf)
+		_, err := io.ReadFull(r, readBuf)
 		if err != nil {
 			if err != io.EOF && !errors.Is(err, os.ErrClosed) {
 				m.logger.Printf("frame reader error: %v", err)
@@ -447,40 +504,55 @@ func (m *Manager) forwardFrames(ctx context.Context, r io.Reader) {
 			return
 		}
 
-		if err := m.driver.WriteFrame(cfg.Width, cfg.Height, buf); err != nil {
-			// ErrNoConsumer is expected when no app has the virtual camera
-			// open yet — suppress it to avoid log spam.
-			if !errors.Is(err, driver.ErrNoConsumer) {
-				m.logger.Printf("write frame error: %v", err)
-			}
-		}
+		// Swap read buffer with shared buffer
+		fb.mu.Lock()
+		fb.data, readBuf = readBuf, fb.data
+		fb.fresh = true
+		fb.mu.Unlock()
 
-		m.broadcastFrame(cfg.Width, cfg.Height, buf)
-
-		m.onFrameMu.Lock()
-		cb := m.onFrame
-		m.onFrameMu.Unlock()
-		if cb != nil {
-			cb(cfg.Width, cfg.Height, append([]byte(nil), buf...))
+		// Non-blocking notification to worker
+		select {
+		case notifyChan <- struct{}{}:
+		default:
 		}
 	}
 }
 
 func (m *Manager) broadcastFrame(width, height int, pix []byte) {
+	m.listenersMu.Lock()
+	hasListeners := len(m.listeners) > 0
+	m.listenersMu.Unlock()
+
+	if !hasListeners {
+		return
+	}
+
 	m.rgbaImgMu.Lock()
+	now := time.Now()
+	if now.Sub(m.lastPreviewTime) < 66*time.Millisecond { // Max ~15 FPS
+		m.rgbaImgMu.Unlock()
+		return
+	}
+	m.lastPreviewTime = now
+
 	if m.rgbaImg == nil || m.rgbaImg.Rect.Dx() != width || m.rgbaImg.Rect.Dy() != height {
 		m.rgbaImg = image.NewRGBA(image.Rect(0, 0, width, height))
 	}
-	// Convert BGRA to RGBA
-	for i := 0; i < len(pix); i += 4 {
-		m.rgbaImg.Pix[i]   = pix[i+2] // R
-		m.rgbaImg.Pix[i+1] = pix[i+1] // G
-		m.rgbaImg.Pix[i+2] = pix[i]   // B
-		m.rgbaImg.Pix[i+3] = pix[i+3] // A
+	if runtime.GOOS == "windows" {
+		// Convert BGRA to RGBA
+		for i := 0; i < len(pix); i += 4 {
+			m.rgbaImg.Pix[i]   = pix[i+2] // R
+			m.rgbaImg.Pix[i+1] = pix[i+1] // G
+			m.rgbaImg.Pix[i+2] = pix[i]   // B
+			m.rgbaImg.Pix[i+3] = pix[i+3] // A
+		}
+	} else {
+		// Linux stdout is already RGBA, use fast memory copy
+		copy(m.rgbaImg.Pix, pix)
 	}
 
 	var buf bytes.Buffer
-	err := jpeg.Encode(&buf, m.rgbaImg, &jpeg.Options{Quality: 75})
+	err := jpeg.Encode(&buf, m.rgbaImg, &jpeg.Options{Quality: 60})
 	m.rgbaImgMu.Unlock()
 
 	if err != nil {
@@ -558,6 +630,93 @@ func (m *Manager) startHTTPServer() {
 				if flusher, ok := w.(http.Flusher); ok {
 					flusher.Flush()
 				}
+			}
+		}
+	})
+
+	mux.HandleFunc("/ws-stream", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Upgrade") != "websocket" {
+			http.Error(w, "Not a websocket handshake", http.StatusBadRequest)
+			return
+		}
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			http.Error(w, "Webserver doesn't support hijacking", http.StatusInternalServerError)
+			return
+		}
+		conn, bufrw, err := hj.Hijack()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer conn.Close()
+
+		key := r.Header.Get("Sec-WebSocket-Key")
+		h := sha1.New()
+		h.Write([]byte(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
+		accept := base64.StdEncoding.EncodeToString(h.Sum(nil))
+
+		bufrw.WriteString("HTTP/1.1 101 Switching Protocols\r\n")
+		bufrw.WriteString("Upgrade: websocket\r\n")
+		bufrw.WriteString("Connection: Upgrade\r\n")
+		bufrw.WriteString("Sec-WebSocket-Accept: " + accept + "\r\n\r\n")
+		bufrw.Flush()
+
+		ch := make(chan []byte, 5)
+		m.listenersMu.Lock()
+		m.listeners[ch] = true
+		m.listenersMu.Unlock()
+
+		defer func() {
+			m.listenersMu.Lock()
+			delete(m.listeners, ch)
+			m.listenersMu.Unlock()
+			close(ch)
+		}()
+
+		closeChan := make(chan struct{})
+		go func() {
+			buf := make([]byte, 1024)
+			for {
+				_, err := conn.Read(buf)
+				if err != nil {
+					close(closeChan)
+					return
+				}
+			}
+		}()
+
+		cn := r.Context()
+		for {
+			select {
+			case <-cn.Done():
+				return
+			case <-closeChan:
+				return
+			case jpegBytes, ok := <-ch:
+				if !ok {
+					return
+				}
+				length := len(jpegBytes)
+				var header []byte
+				if length < 126 {
+					header = []byte{0x82, byte(length)}
+				} else if length < 65536 {
+					header = []byte{0x82, 126, byte(length >> 8), byte(length)}
+				} else {
+					header = []byte{
+						0x82, 127,
+						byte(length >> 56), byte(length >> 48), byte(length >> 40), byte(length >> 32),
+						byte(length >> 24), byte(length >> 16), byte(length >> 8), byte(length),
+					}
+				}
+				if _, err := bufrw.Write(header); err != nil {
+					return
+				}
+				if _, err := bufrw.Write(jpegBytes); err != nil {
+					return
+				}
+				bufrw.Flush()
 			}
 		}
 	})

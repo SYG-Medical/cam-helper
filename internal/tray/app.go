@@ -97,11 +97,16 @@ func New() (*App, error) {
 		}
 
 		// Convert BGRA -> RGBA into the pre-allocated reusable texture buffer
-		for i := 0; i < len(pix); i += 4 {
-			appObj.rgbaImg.Pix[i]   = pix[i+2] // R
-			appObj.rgbaImg.Pix[i+1] = pix[i+1] // G
-			appObj.rgbaImg.Pix[i+2] = pix[i]   // B
-			appObj.rgbaImg.Pix[i+3] = pix[i+3] // A
+		if runtime.GOOS == "windows" {
+			for i := 0; i < len(pix); i += 4 {
+				appObj.rgbaImg.Pix[i]   = pix[i+2] // R
+				appObj.rgbaImg.Pix[i+1] = pix[i+1] // G
+				appObj.rgbaImg.Pix[i+2] = pix[i]   // B
+				appObj.rgbaImg.Pix[i+3] = pix[i+3] // A
+			}
+		} else {
+			// Linux stdout is already RGBA, use fast memory copy
+			copy(appObj.rgbaImg.Pix, pix)
 		}
 		appObj.mu.Unlock()
 
