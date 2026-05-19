@@ -45,6 +45,7 @@ type App struct {
 	previewWin  fyne.Window
 	previewImg  *canvas.Image
 	rgbaImg     *image.RGBA
+	urlTimer    *time.Timer
 }
 
 func New() (*App, error) {
@@ -121,6 +122,30 @@ func (a *App) setupUI() {
 	urlEntry.OnChanged = func(s string) {
 		a.mu.Lock()
 		a.cfg.RTSPURL = s
+		if a.urlTimer != nil {
+			a.urlTimer.Stop()
+		}
+		a.urlTimer = time.AfterFunc(2*time.Second, func() {
+			a.mu.Lock()
+			cfg := a.cfg
+			cfgPath := a.cfgPath
+			a.mu.Unlock()
+
+			a.logger.Printf("Auto-saving config and restarting stream with new URL...")
+			if err := config.Save(cfg, cfgPath); err != nil {
+				a.logger.Printf("Failed to save config on URL change: %v", err)
+			} else {
+				a.logger.Printf("Config auto-saved on URL change")
+			}
+
+			a.streamer.Stop()
+			a.streamer.UpdateConfig(cfg)
+			if err := a.streamer.Start(); err != nil {
+				a.logger.Printf("Failed to restart stream: %v", err)
+			} else {
+				a.logger.Printf("Stream restarted with new URL: %s", cfg.RTSPURL)
+			}
+		})
 		a.mu.Unlock()
 	}
 
