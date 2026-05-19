@@ -302,11 +302,14 @@ func (m *Manager) buildFFmpegCommand(ctx context.Context) (*exec.Cmd, error) {
 			)
 		} else {
 			// On Linux, we output to both:
-			// 1. The v4l2 device (using yuv420p format)
+			// 1. The v4l2 device (using yuyv422 format for browser/WebRTC compatibility)
 			// 2. stdout (using bgra rawvideo format) so Go can read it for live preview and MJPEG HTTP server
+			// We must apply the scale and fps filter to BOTH outputs so that the stdout stream
+			// matches the width and height expected by our Go reader.
 			args = append(args,
-				"-pix_fmt", "yuv420p",
+				"-pix_fmt", "yuyv422",
 				"-f", "v4l2", m.driver.FFmpegOutputTarget(),
+				"-vf", fmt.Sprintf("scale=%d:%d,fps=%d", cfg.Width, cfg.Height, cfg.FPS),
 				"-pix_fmt", "bgra",
 				"-f", "rawvideo", "-",
 			)
