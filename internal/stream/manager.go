@@ -282,18 +282,18 @@ func (m *Manager) buildFFmpegCommand(ctx context.Context) (*exec.Cmd, error) {
 		"-hide_banner",
 		"-loglevel", "warning",
 		"-rtsp_transport", "tcp",
-		"-probesize", "32",
-		"-analyzeduration", "0",
+		"-probesize", "10M",
+		"-analyzeduration", "2M",
 		"-fflags", "nobuffer",
 		"-flags", "low_delay",
 		"-thread_queue_size", "1024",
 		"-i", cfg.RTSPURL,
 		"-an",
-		"-vf", fmt.Sprintf("scale=%d:%d,fps=%d", cfg.Width, cfg.Height, cfg.FPS),
 	}
 
 	if m.driver.UseBridge() {
 		args = append(args,
+			"-vf", fmt.Sprintf("scale=%d:%d,fps=%d", cfg.Width, cfg.Height, cfg.FPS),
 			"-pix_fmt", "yuv420p",
 			"-f", "mpegts",
 			m.driver.FFmpegOutputTarget(),
@@ -302,6 +302,7 @@ func (m *Manager) buildFFmpegCommand(ctx context.Context) (*exec.Cmd, error) {
 		if runtime.GOOS == "windows" {
 			// On Windows, use rawvideo for builtin bridge
 			args = append(args,
+				"-vf", fmt.Sprintf("scale=%d:%d,fps=%d", cfg.Width, cfg.Height, cfg.FPS),
 				"-pix_fmt", "bgra",
 				"-f", "rawvideo",
 				m.driver.FFmpegOutputTarget(),
