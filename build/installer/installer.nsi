@@ -1,7 +1,7 @@
-!define APP_NAME "SYG RTSP Virtual Cam Agent"
+!define APP_NAME "SYG Camera Helper"
 !define APP_EXE "rtsp-virtual-cam-agent.exe"
 !define COMPANY "SYG Medical"
-!define INSTALL_DIR "$PROGRAMFILES64\\SYG Medical\\RTSP Virtual Cam Agent"
+!define INSTALL_DIR "$PROGRAMFILES64\\SYG Medical\\Camera Helper"
 !define DRIVER_INSTALLER "virtual-camera-installer.exe"
 
 !include "MUI2.nsh"

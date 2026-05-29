@@ -32,8 +32,10 @@ type State struct {
 	RestartCount uint64
 }
 
+// Manager handles a single camera stream pipeline (FFmpeg process).
 type Manager struct {
-	cfg          config.Config
+	cam          config.CameraSource
+	globalCfg    config.Config
 	logger       *logging.Logger
 	driver       *driver.Manager
 	mu           sync.Mutex
@@ -44,24 +46,55 @@ type Manager struct {
 	onFrame      func(width, height int, pix []byte)
 	onFrameMu    sync.Mutex
 
-	// HTTP MJPEG Server fields
-	httpServer  *http.Server
-	listeners   map[chan []byte]bool
-	listenersMu sync.Mutex
+	// HTTP MJPEG Server fields (only used when this camera is the RTSP server camera)
+	httpServer      *http.Server
+	listeners       map[chan []byte]bool
+	listenersMu     sync.Mutex
 	rgbaImg         *image.RGBA
 	rgbaImgMu       sync.Mutex
 	lastPreviewTime time.Time
+
+	enableHTTPServer bool // whether this manager should start the HTTP MJPEG server
 }
 
-func New(cfg config.Config, logger *logging.Logger, drv *driver.Manager) *Manager {
+// NewFromCamera creates a Manager for a specific camera source.
+func NewFromCamera(cam config.CameraSource, globalCfg config.Config, logger *logging.Logger, drv *driver.Manager, enableHTTP bool) *Manager {
 	m := &Manager{
-		cfg:       cfg,
-		logger:    logger,
-		driver:    drv,
-		listeners: make(map[chan []byte]bool),
+		cam:              cam,
+		globalCfg:        globalCfg,
+		logger:           logger,
+		driver:           drv,
+		listeners:        make(map[chan []byte]bool),
+		enableHTTPServer: enableHTTP,
 	}
-	m.startHTTPServer()
+	if enableHTTP {
+		m.startHTTPServer()
+	}
 	return m
+}
+
+// New creates a Manager using the legacy single-camera approach.
+// Kept for backward compatibility.
+func New(cfg config.Config, logger *logging.Logger, drv *driver.Manager) *Manager {
+	cam := config.CameraSource{
+		ID:      "legacy",
+		Name:    "Default",
+		Type:    "rtsp",
+		Width:   1280,
+		Height:  720,
+		FPS:     30,
+		Enabled: true,
+	}
+	if len(cfg.Cameras) > 0 {
+		cam = cfg.Cameras[0]
+	}
+	return NewFromCamera(cam, cfg, logger, drv, true)
+}
+
+func (m *Manager) CameraID() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.cam.ID
 }
 
 func (m *Manager) SetOnFrame(cb func(width, height int, pix []byte)) {
@@ -77,12 +110,26 @@ func (m *Manager) Start() error {
 	if m.state.Running {
 		return nil
 	}
-	if strings.TrimSpace(m.cfg.RTSPURL) == "" {
-		return errors.New("rtsp_url is empty")
+
+	// Validate source
+	switch m.cam.Type {
+	case "rtsp":
+		if strings.TrimSpace(m.cam.RTSPURL) == "" {
+			return fmt.Errorf("RTSP URL is empty for camera %q", m.cam.Name)
+		}
+	case "webcam":
+		if strings.TrimSpace(m.cam.Device) == "" {
+			return fmt.Errorf("webcam device is empty for camera %q", m.cam.Name)
+		}
+	default:
+		return fmt.Errorf("unknown camera type %q for camera %q", m.cam.Type, m.cam.Name)
 	}
 
-	if user, busy, err := m.driver.IsDeviceBusy(); err == nil && busy {
-		return fmt.Errorf("virtual camera device is already in use by: %s", user)
+	// Only check virtual camera device busy for the RTSP server camera
+	if m.enableHTTPServer {
+		if user, busy, err := m.driver.IsDeviceBusy(); err == nil && busy {
+			return fmt.Errorf("virtual camera device is already in use by: %s", user)
+		}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -109,15 +156,34 @@ func (m *Manager) Stop() {
 	m.mu.Unlock()
 }
 
+// Close stops the stream and shuts down the HTTP server cleanly.
+func (m *Manager) Close() {
+	m.Stop()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.httpServer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = m.httpServer.Shutdown(ctx)
+		m.httpServer = nil
+	}
+}
+
 func (m *Manager) State() State {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.state
 }
 
+func (m *Manager) UpdateCamera(cam config.CameraSource) {
+	m.mu.Lock()
+	m.cam = cam
+	m.mu.Unlock()
+}
+
 func (m *Manager) UpdateConfig(cfg config.Config) {
 	m.mu.Lock()
-	m.cfg = cfg
+	m.globalCfg = cfg
 	m.mu.Unlock()
 }
 
@@ -127,25 +193,28 @@ func (m *Manager) supervise(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			m.logger.Printf("stream supervisor stopped")
+			m.logger.Printf("[%s] stream supervisor stopped", m.cam.Name)
 			return
 		default:
 		}
 
-		if err := m.driver.EnsureInstalled(ctx); err != nil {
-			m.recordError(err)
-			if !sleepOrDone(ctx, 8*time.Second) {
-				return
+		// For RTSP server camera, ensure driver is installed
+		if m.enableHTTPServer {
+			if err := m.driver.EnsureInstalled(ctx); err != nil {
+				m.recordError(err)
+				if !sleepOrDone(ctx, 8*time.Second) {
+					return
+				}
+				continue
 			}
-			continue
-		}
 
-		if user, busy, err := m.driver.IsDeviceBusy(); err == nil && busy {
-			m.recordError(fmt.Errorf("virtual camera is in use by: %s", user))
-			if !sleepOrDone(ctx, 5*time.Second) {
-				return
+			if user, busy, err := m.driver.IsDeviceBusy(); err == nil && busy {
+				m.recordError(fmt.Errorf("virtual camera is in use by: %s", user))
+				if !sleepOrDone(ctx, 5*time.Second) {
+					return
+				}
+				continue
 			}
-			continue
 		}
 
 		bridgeCmd, ffmpegCmd, err := m.preparePipeline(ctx)
@@ -159,7 +228,7 @@ func (m *Manager) supervise(ctx context.Context) {
 
 		bridgeStarted := false
 		if bridgeCmd != nil {
-			m.logger.Printf("starting bridge: %s", strings.Join(bridgeCmd.Args, " "))
+			m.logger.Printf("[%s] starting bridge: %s", m.cam.Name, strings.Join(bridgeCmd.Args, " "))
 			if err := bridgeCmd.Start(); err != nil {
 				m.recordError(fmt.Errorf("start bridge: %w", err))
 				if !sleepOrDone(ctx, 8*time.Second) {
@@ -170,8 +239,11 @@ func (m *Manager) supervise(ctx context.Context) {
 			bridgeStarted = true
 		}
 
-		useBuiltinWriter := !m.driver.UseBridge()
-		if useBuiltinWriter {
+		useBuiltinWriter := m.enableHTTPServer && !m.driver.UseBridge()
+		// For webcam-only (non-server) cameras, we always need stdout for preview
+		isPreviewOnly := !m.enableHTTPServer
+
+		if useBuiltinWriter || isPreviewOnly {
 			stdout, err := ffmpegCmd.StdoutPipe()
 			if err != nil {
 				m.recordError(fmt.Errorf("ffmpeg stdout pipe: %w", err))
@@ -188,13 +260,13 @@ func (m *Manager) supervise(ctx context.Context) {
 			// Still attach stderr logs
 			stderr, err := ffmpegCmd.StderrPipe()
 			if err == nil {
-				go scanPipe("ffmpeg stderr", stderr, m.logger)
+				go scanPipe(fmt.Sprintf("[%s] ffmpeg stderr", m.cam.Name), stderr, m.logger)
 			}
 		} else {
-			attachLogs("ffmpeg", ffmpegCmd, m.logger)
+			attachLogs(fmt.Sprintf("[%s] ffmpeg", m.cam.Name), ffmpegCmd, m.logger)
 		}
 
-		m.logger.Printf("starting ffmpeg: %s", strings.Join(ffmpegCmd.Args, " "))
+		m.logger.Printf("[%s] starting ffmpeg: %s", m.cam.Name, strings.Join(ffmpegCmd.Args, " "))
 		if err := ffmpegCmd.Start(); err != nil {
 			if bridgeStarted && bridgeCmd.Process != nil {
 				_ = bridgeCmd.Process.Kill()
@@ -252,12 +324,14 @@ func (m *Manager) supervise(ctx context.Context) {
 func (m *Manager) preparePipeline(ctx context.Context) (*exec.Cmd, *exec.Cmd, error) {
 	var bridgeCmd *exec.Cmd
 	var err error
-	if m.driver.UseBridge() {
+
+	// Bridge is only used for the RTSP server camera
+	if m.enableHTTPServer && m.driver.UseBridge() {
 		bridgeCmd, err = m.driver.StartBridge(ctx)
 		if err != nil {
 			return nil, nil, err
 		}
-		attachLogs("bridge", bridgeCmd, m.logger)
+		attachLogs(fmt.Sprintf("[%s] bridge", m.cam.Name), bridgeCmd, m.logger)
 	}
 
 	ffmpegCmd, err := m.buildFFmpegCommand(ctx)
@@ -275,9 +349,43 @@ func (m *Manager) buildFFmpegCommand(ctx context.Context) (*exec.Cmd, error) {
 	}
 
 	m.mu.Lock()
-	cfg := m.cfg
+	cam := m.cam
 	m.mu.Unlock()
 
+	var args []string
+
+	switch cam.Type {
+	case "webcam":
+		args = m.buildWebcamArgs(cam)
+	default: // "rtsp"
+		args = m.buildRTSPArgs(cam)
+	}
+
+	cmd := exec.CommandContext(ctx, path, args...)
+	setHideWindow(cmd)
+	return cmd, nil
+}
+
+func (m *Manager) PreviewDimensions() (int, int) {
+	m.mu.Lock()
+	cam := m.cam
+	enableHTTP := m.enableHTTPServer
+	m.mu.Unlock()
+
+	// If it is the RTSP server camera, we keep the original resolution for the stdout preview pipeline
+	if enableHTTP {
+		return cam.Width, cam.Height
+	}
+
+	// Otherwise, scale preview down to max 640 width to save CPU/memory copy overhead
+	if cam.Width > 640 {
+		ratio := float64(cam.Height) / float64(cam.Width)
+		return 640, int(640 * ratio)
+	}
+	return cam.Width, cam.Height
+}
+
+func (m *Manager) buildRTSPArgs(cam config.CameraSource) []string {
 	args := []string{
 		"-hide_banner",
 		"-loglevel", "warning",
@@ -287,33 +395,29 @@ func (m *Manager) buildFFmpegCommand(ctx context.Context) (*exec.Cmd, error) {
 		"-fflags", "nobuffer",
 		"-flags", "low_delay",
 		"-thread_queue_size", "1024",
-		"-i", cfg.RTSPURL,
+		"-i", cam.RTSPURL,
 		"-an",
 	}
 
-	if m.driver.UseBridge() {
+	if m.enableHTTPServer && m.driver.UseBridge() {
 		args = append(args,
-			"-vf", fmt.Sprintf("scale=%d:%d,fps=%d", cfg.Width, cfg.Height, cfg.FPS),
+			"-vf", fmt.Sprintf("scale=%d:%d,fps=%d", cam.Width, cam.Height, cam.FPS),
 			"-pix_fmt", "yuv420p",
 			"-f", "mpegts",
 			m.driver.FFmpegOutputTarget(),
 		)
-	} else {
+	} else if m.enableHTTPServer {
 		if runtime.GOOS == "windows" {
-			// On Windows, use rawvideo for builtin bridge
 			args = append(args,
-				"-vf", fmt.Sprintf("scale=%d:%d,fps=%d", cfg.Width, cfg.Height, cfg.FPS),
+				"-vf", fmt.Sprintf("scale=%d:%d,fps=%d", cam.Width, cam.Height, cam.FPS),
 				"-pix_fmt", "bgra",
 				"-f", "rawvideo",
 				m.driver.FFmpegOutputTarget(),
 			)
 		} else {
-			// On Linux, we output to both:
-			// 1. The v4l2 device (using yuyv422 format for browser/WebRTC compatibility)
-			// 2. stdout (using rgba rawvideo format) so Go can read it for live preview and MJPEG HTTP server
-			// We use filter_complex to scale and set FPS only once, then split to both outputs for maximum performance.
+			// Linux: dual output — v4l2 device + stdout for preview/HTTP
 			args = append(args,
-				"-filter_complex", fmt.Sprintf("[0:v]fps=%d,scale=%d:%d:flags=fast_bilinear,split=2[v1][v2]", cfg.FPS, cfg.Width, cfg.Height),
+				"-filter_complex", fmt.Sprintf("[0:v]fps=%d,scale=%d:%d:flags=fast_bilinear,split=2[v1][v2]", cam.FPS, cam.Width, cam.Height),
 				"-map", "[v1]",
 				"-pix_fmt", "yuyv422",
 				"-f", "v4l2", m.driver.FFmpegOutputTarget(),
@@ -322,16 +426,59 @@ func (m *Manager) buildFFmpegCommand(ctx context.Context) (*exec.Cmd, error) {
 				"-f", "rawvideo", "-",
 			)
 		}
+	} else {
+		// Preview-only camera: just output rgba rawvideo to stdout scaled to preview size
+		w, h := m.PreviewDimensions()
+		args = append(args,
+			"-vf", fmt.Sprintf("scale=%d:%d,fps=%d", w, h, cam.FPS),
+			"-pix_fmt", "rgba",
+			"-f", "rawvideo", "-",
+		)
 	}
 
-	cmd := exec.CommandContext(ctx, path, args...)
-	setHideWindow(cmd)
-	return cmd, nil
+	return args
+}
+
+func (m *Manager) buildWebcamArgs(cam config.CameraSource) []string {
+	args := []string{
+		"-hide_banner",
+		"-loglevel", "warning",
+	}
+
+	if runtime.GOOS == "linux" {
+		args = append(args,
+			"-f", "v4l2",
+			"-input_format", "mjpeg", // Force MJPEG for high FPS
+			"-framerate", fmt.Sprintf("%d", cam.FPS),
+			"-video_size", fmt.Sprintf("%dx%d", cam.Width, cam.Height),
+		)
+	} else if runtime.GOOS == "windows" {
+		args = append(args,
+			"-f", "dshow",
+			"-framerate", fmt.Sprintf("%d", cam.FPS),
+			"-video_size", fmt.Sprintf("%dx%d", cam.Width, cam.Height),
+		)
+	}
+
+	args = append(args,
+		"-i", cam.Device,
+		"-an",
+	)
+
+	w, h := m.PreviewDimensions()
+	// Webcam cameras always output rgba rawvideo to stdout for preview
+	args = append(args,
+		"-vf", fmt.Sprintf("scale=%d:%d,fps=%d", w, h, cam.FPS),
+		"-pix_fmt", "rgba",
+		"-f", "rawvideo", "-",
+	)
+
+	return args
 }
 
 func (m *Manager) resolveFFmpegPath() (string, error) {
 	m.mu.Lock()
-	candidate := m.cfg.FFmpegPath
+	candidate := m.globalCfg.FFmpegPath
 	m.mu.Unlock()
 
 	if runtime.GOOS != "windows" {
@@ -387,7 +534,7 @@ func (m *Manager) recordError(err error) {
 		RestartCount: m.restartCount,
 	}
 	if err != nil {
-		m.logger.Printf("pipeline error: %v", err)
+		m.logger.Printf("[%s] pipeline error: %v", m.cam.Name, err)
 	}
 }
 
@@ -434,10 +581,11 @@ func scanPipe(prefix string, r io.Reader, logger *logging.Logger) {
 
 func (m *Manager) forwardFrames(ctx context.Context, r io.Reader) {
 	m.mu.Lock()
-	cfg := m.cfg
+	cam := m.cam
 	m.mu.Unlock()
 
-	frameSize := cfg.Width * cfg.Height * 4
+	pw, ph := m.PreviewDimensions()
+	frameSize := pw * ph * 4
 
 	// Double buffering structure to swap frames without allocations
 	var fb struct {
@@ -466,23 +614,26 @@ func (m *Manager) forwardFrames(ctx context.Context, r io.Reader) {
 				fb.fresh = false
 				fb.mu.Unlock()
 
-				// 1. Write frame to virtual camera driver
-				if err := m.driver.WriteFrame(cfg.Width, cfg.Height, workBuf); err != nil {
-					// ErrNoConsumer is expected when no app has the virtual camera open
-					if !errors.Is(err, driver.ErrNoConsumer) {
-						m.logger.Printf("write frame error: %v", err)
+				// 1. Write frame to virtual camera driver (only for server camera)
+				if m.enableHTTPServer {
+					if err := m.driver.WriteFrame(pw, ph, workBuf); err != nil {
+						if !errors.Is(err, driver.ErrNoConsumer) {
+							m.logger.Printf("[%s] write frame error: %v", cam.Name, err)
+						}
 					}
 				}
 
-				// 2. Broadcast to HTTP clients
-				m.broadcastFrame(cfg.Width, cfg.Height, workBuf)
+				// 2. Broadcast to HTTP clients (only for server camera)
+				if m.enableHTTPServer {
+					m.broadcastFrame(pw, ph, workBuf)
+				}
 
-				// 3. Trigger live preview callback
+				// 3. Trigger live preview callback (all cameras)
 				m.onFrameMu.Lock()
 				cb := m.onFrame
 				m.onFrameMu.Unlock()
 				if cb != nil {
-					cb(cfg.Width, cfg.Height, workBuf)
+					cb(pw, ph, workBuf)
 				}
 			}
 		}
@@ -500,7 +651,7 @@ func (m *Manager) forwardFrames(ctx context.Context, r io.Reader) {
 		_, err := io.ReadFull(r, readBuf)
 		if err != nil {
 			if err != io.EOF && !errors.Is(err, os.ErrClosed) {
-				m.logger.Printf("frame reader error: %v", err)
+				m.logger.Printf("[%s] frame reader error: %v", cam.Name, err)
 			}
 			return
 		}
@@ -542,7 +693,7 @@ func (m *Manager) broadcastFrame(width, height int, pix []byte) {
 	if runtime.GOOS == "windows" {
 		// Convert BGRA to RGBA
 		for i := 0; i < len(pix); i += 4 {
-			m.rgbaImg.Pix[i]   = pix[i+2] // R
+			m.rgbaImg.Pix[i] = pix[i+2]   // R
 			m.rgbaImg.Pix[i+1] = pix[i+1] // G
 			m.rgbaImg.Pix[i+2] = pix[i]   // B
 			m.rgbaImg.Pix[i+3] = pix[i+3] // A
@@ -574,7 +725,9 @@ func (m *Manager) broadcastFrame(width, height int, pix []byte) {
 }
 
 func (m *Manager) startHTTPServer() {
-	port := m.cfg.BridgePort
+	m.mu.Lock()
+	port := m.globalCfg.BridgePort
+	m.mu.Unlock()
 	if port <= 0 {
 		port = 18080
 	}
@@ -583,7 +736,7 @@ func (m *Manager) startHTTPServer() {
 	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"ok","service":"SYG RTSP Agent"}`))
+		w.Write([]byte(`{"status":"ok","service":"SYG Camera Helper"}`))
 	})
 
 	mux.HandleFunc("/stream", func(w http.ResponseWriter, r *http.Request) {

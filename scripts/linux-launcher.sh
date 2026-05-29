@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_NAME="RTSP Virtual Cam Agent"
-CONFIG_DIR="${HOME}/.config/SYG/RTSPVirtualCamAgent"
+APP_NAME="SYG Camera Helper"
+CONFIG_DIR="${HOME}/.config/SYG/CameraHelper"
 CONFIG_FILE="${CONFIG_DIR}/config.json"
-CACHE_DIR="${HOME}/.cache/SYG/RTSPVirtualCamAgent"
+CACHE_DIR="${HOME}/.cache/SYG/CameraHelper"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APPDIR_ROOT="${APPDIR:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
@@ -50,7 +50,7 @@ ensure_loopback() {
   label="$(load_config_field target_virtual_camera)"
   
   if [[ -z "${device}" ]]; then device="/dev/video10"; fi
-  if [[ -z "${label}" ]]; then label="SYG RTSP Camera"; fi
+  if [[ -z "${label}" ]]; then label="SYG Camera"; fi
 
   if [[ -c "${device}" ]] && v4l2-ctl --device="${device}" --all 2>/dev/null | grep -qiE 'v4l2loopback|virtual camera'; then
     return 0

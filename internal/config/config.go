@@ -11,41 +11,93 @@ import (
 
 const (
 	vendorDir = "SYG"
-	appDir    = "RTSPVirtualCamAgent"
+	appDir    = "CameraHelper"
 	fileName  = "config.json"
+
+	MinCameras = 2
+	MaxCameras = 9
 )
 
+// CameraSource describes a single camera input (RTSP stream or local webcam).
+type CameraSource struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Type    string `json:"type"`     // "rtsp" or "webcam"
+	RTSPURL string `json:"rtsp_url"` // used when Type == "rtsp"
+	Device  string `json:"device"`   // used when Type == "webcam", e.g. "/dev/video0"
+	Width   int    `json:"width"`
+	Height  int    `json:"height"`
+	FPS     int    `json:"fps"`
+	Enabled bool   `json:"enabled"`
+}
+
+// SavedLayout stores a named layout with full camera+source information.
+type SavedLayout struct {
+	Name    string         `json:"name"`
+	Cameras []CameraSource `json:"cameras"`
+}
+
+// Config holds the application configuration.
 type Config struct {
-	RTSPURL             string `json:"rtsp_url"`
+	// General settings
 	AutoStart           bool   `json:"auto_start"`
 	TargetVirtualCamera string `json:"target_virtual_camera"`
 	LinuxVideoDevice    string `json:"linux_video_device"`
-	Width               int    `json:"width"`
-	Height              int    `json:"height"`
-	FPS                 int    `json:"fps"`
 	DriverMode          string `json:"driver_mode"`
 	BridgePort          int    `json:"bridge_port"`
 	DriverInstaller     string `json:"driver_installer"`
 	DriverBridge        string `json:"driver_bridge"`
 	FFmpegPath          string `json:"ffmpeg_path"`
 	LogLevel            string `json:"log_level"`
+
+	// Multi-camera fields
+	Cameras          []CameraSource `json:"cameras"`
+	SavedLayouts     []SavedLayout  `json:"saved_layouts"`
+	ActiveLayoutName string         `json:"active_layout_name"`
+	RTSPServerCamera string         `json:"rtsp_server_camera"` // camera ID whose stream is served over HTTP
+
+	// Legacy field for backward compat migration (not persisted in new configs)
+	legacyRTSPURL string
+}
+
+// legacyConfigJSON is used only to detect old single-camera config files during loading.
+type legacyConfigJSON struct {
+	RTSPURL string `json:"rtsp_url"`
 }
 
 func Default() Config {
 	return Config{
-		RTSPURL:             "rtsp://172.28.6.234:5544/live0.264",
-		AutoStart:           true,
-		TargetVirtualCamera: "SYG RTSP Camera",
+		AutoStart:           false,
+		TargetVirtualCamera: "SYG Camera",
 		LinuxVideoDevice:    "/dev/video10",
-		Width:               1280,
-		Height:              720,
-		FPS:                 30,
 		DriverMode:          "bridge",
 		BridgePort:          18080,
 		DriverInstaller:     `third_party\\driver\\virtual-camera-installer.exe`,
 		DriverBridge:        `third_party\\driver\\virtual-camera-bridge.exe`,
 		FFmpegPath:          `third_party\\ffmpeg\\ffmpeg.exe`,
 		LogLevel:            "info",
+		Cameras: []CameraSource{
+			{
+				ID:      "cam-1",
+				Name:    "Kamera 1",
+				Type:    "rtsp",
+				RTSPURL: "",
+				Width:   1280,
+				Height:  720,
+				FPS:     30,
+				Enabled: true,
+			},
+			{
+				ID:      "cam-2",
+				Name:    "Kamera 2",
+				Type:    "rtsp",
+				RTSPURL: "",
+				Width:   1280,
+				Height:  720,
+				FPS:     30,
+				Enabled: true,
+			},
+		},
 	}
 }
 
@@ -77,6 +129,34 @@ func LoadOrCreate() (Config, string, error) {
 		return Config{}, "", fmt.Errorf("parse config: %w", err)
 	}
 
+	// Migrate legacy single-camera config: if "rtsp_url" is present and cameras is empty
+	var legacy legacyConfigJSON
+	_ = json.Unmarshal(data, &legacy)
+	if legacy.RTSPURL != "" && len(cfg.Cameras) == 0 {
+		cfg.Cameras = []CameraSource{
+			{
+				ID:      "cam-1",
+				Name:    "Kamera 1",
+				Type:    "rtsp",
+				RTSPURL: legacy.RTSPURL,
+				Width:   1280,
+				Height:  720,
+				FPS:     30,
+				Enabled: true,
+			},
+			{
+				ID:      "cam-2",
+				Name:    "Kamera 2",
+				Type:    "rtsp",
+				RTSPURL: "",
+				Width:   1280,
+				Height:  720,
+				FPS:     30,
+				Enabled: true,
+			},
+		}
+	}
+
 	cfg.normalize()
 	return cfg, path, nil
 }
@@ -103,21 +183,66 @@ func LogsDir() (string, error) {
 	return filepath.Join(root, vendorDir, appDir, "logs"), nil
 }
 
+// NextCameraID returns the next available camera ID like "cam-3", "cam-4", etc.
+func NextCameraID(cameras []CameraSource) string {
+	maxNum := 0
+	for _, c := range cameras {
+		var n int
+		if _, err := fmt.Sscanf(c.ID, "cam-%d", &n); err == nil && n > maxNum {
+			maxNum = n
+		}
+	}
+	return fmt.Sprintf("cam-%d", maxNum+1)
+}
+
 func (c *Config) normalize() {
-	if c.Width <= 0 {
-		c.Width = 1280
+	// Ensure minimum 2 cameras
+	for len(c.Cameras) < MinCameras {
+		id := NextCameraID(c.Cameras)
+		c.Cameras = append(c.Cameras, CameraSource{
+			ID:      id,
+			Name:    fmt.Sprintf("Kamera %d", len(c.Cameras)+1),
+			Type:    "rtsp",
+			Width:   1280,
+			Height:  720,
+			FPS:     30,
+			Enabled: true,
+		})
 	}
-	if c.Height <= 0 {
-		c.Height = 720
+
+	// Ensure max 9 cameras
+	if len(c.Cameras) > MaxCameras {
+		c.Cameras = c.Cameras[:MaxCameras]
 	}
-	if c.FPS <= 0 {
-		c.FPS = 30
+
+	// Normalize each camera
+	for i := range c.Cameras {
+		cam := &c.Cameras[i]
+		if cam.ID == "" {
+			cam.ID = NextCameraID(c.Cameras[:i])
+		}
+		if cam.Name == "" {
+			cam.Name = fmt.Sprintf("Kamera %d", i+1)
+		}
+		if cam.Type == "" {
+			cam.Type = "rtsp"
+		}
+		if cam.Width <= 0 {
+			cam.Width = 1280
+		}
+		if cam.Height <= 0 {
+			cam.Height = 720
+		}
+		if cam.FPS <= 0 {
+			cam.FPS = 30
+		}
 	}
+
 	if c.BridgePort <= 0 {
 		c.BridgePort = 18080
 	}
 	if c.TargetVirtualCamera == "" {
-		c.TargetVirtualCamera = "SYG RTSP Camera"
+		c.TargetVirtualCamera = "SYG Camera"
 	}
 	if c.LinuxVideoDevice == "" {
 		c.LinuxVideoDevice = "/dev/video10"
@@ -140,6 +265,28 @@ func (c *Config) normalize() {
 	}
 	if c.LogLevel == "" {
 		c.LogLevel = "info"
+	}
+
+	// Ensure RTSPServerCamera is set to a valid camera ID
+	found := false
+	for _, cam := range c.Cameras {
+		if cam.ID == c.RTSPServerCamera {
+			found = true
+			break
+		}
+	}
+	if !found && len(c.Cameras) > 0 {
+		// Prefer RTSP cameras first for the server camera
+		for _, cam := range c.Cameras {
+			if cam.Type == "rtsp" {
+				c.RTSPServerCamera = cam.ID
+				found = true
+				break
+			}
+		}
+		if !found {
+			c.RTSPServerCamera = c.Cameras[0].ID
+		}
 	}
 }
 

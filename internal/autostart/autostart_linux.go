@@ -64,8 +64,8 @@ func SetEnabled(enabled bool) error {
 
 	content := fmt.Sprintf(`[Desktop Entry]
 Type=Application
-Name=SYG RTSP Virtual Cam Agent
-Comment=SYG RTSP Virtual Camera Background Agent
+Name=SYG Camera Helper
+Comment=SYG Camera Helper Background Agent
 Exec="%s"
 Icon=rtsp-virtual-cam-agent
 Terminal=false

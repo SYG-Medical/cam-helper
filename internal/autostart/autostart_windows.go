@@ -11,7 +11,7 @@ import (
 )
 
 const runKey = `Software\\Microsoft\\Windows\\CurrentVersion\\Run`
-const valueName = "SYGRTSPVirtualCamAgent"
+const valueName = "SYGCameraHelper"
 
 func IsEnabled() (bool, error) {
 	key, err := registry.OpenKey(registry.CURRENT_USER, runKey, registry.QUERY_VALUE)

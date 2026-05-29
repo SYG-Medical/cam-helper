@@ -35,7 +35,7 @@ if [[ ! -x "${APPIMAGE_TOOL}" ]]; then
 fi
 
 if APPIMAGE_EXTRACT_AND_RUN=1 "${APPIMAGE_TOOL}" --appimage-version >/dev/null 2>&1; then
-  APPIMAGE_EXTRACT_AND_RUN=1 ARCH=x86_64 "${APPIMAGE_TOOL}" "${APPDIR}" "${OUT_DIR}/RTSPVirtualCamAgent-x86_64.AppImage"
+  APPIMAGE_EXTRACT_AND_RUN=1 ARCH=x86_64 "${APPIMAGE_TOOL}" "${APPDIR}" "${OUT_DIR}/SYGCameraHelper-x86_64.AppImage"
 else
   EXTRACT_DIR="${REPO_ROOT}/.cache/tools/appimagetool-extracted"
   rm -rf "${EXTRACT_DIR}"
@@ -43,5 +43,5 @@ else
   APPIMAGE_EXTRACT_AND_RUN=1 "${APPIMAGE_TOOL}" --appimage-extract >/dev/null
   popd >/dev/null
   mv "${REPO_ROOT}/.cache/tools/squashfs-root" "${EXTRACT_DIR}"
-  ARCH=x86_64 "${EXTRACT_DIR}/AppRun" "${APPDIR}" "${OUT_DIR}/RTSPVirtualCamAgent-x86_64.AppImage"
+  ARCH=x86_64 "${EXTRACT_DIR}/AppRun" "${APPDIR}" "${OUT_DIR}/SYGCameraHelper-x86_64.AppImage"
 fi

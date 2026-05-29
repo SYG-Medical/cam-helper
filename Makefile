@@ -1,10 +1,14 @@
 APP_NAME := rtsp-virtual-cam-agent
 REPO_ROOT := $(CURDIR)
 
-.PHONY: build-linux build-windows package-linux package-windows clean
+.PHONY: build-linux build-windows package-linux package-windows clean run run-distrobox build-distrobox
 
 build-linux:
 	go build -o $(APP_NAME) ./cmd/app
+
+run:
+	go run ./cmd/app
+
 
 build-windows:
 	bash ./scripts/build-windows.sh
