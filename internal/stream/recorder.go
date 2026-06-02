@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"image"
+	"image/color"
 	"image/draw"
 	"image/jpeg"
 	"io"
@@ -15,6 +16,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/image/font"
+	"golang.org/x/image/font/basicfont"
+	"golang.org/x/image/math/fixed"
 
 	"rtsp-virtual-cam-agent/internal/logging"
 )
@@ -242,6 +247,14 @@ func (r *Recorder) IsRecording() bool {
 func ComposeGridFrame(frames map[string]*image.RGBA, cameraOrder []string, cols, rows, totalWidth, totalHeight int) *image.RGBA {
 	composite := image.NewRGBA(image.Rect(0, 0, totalWidth, totalHeight))
 
+	// Fill background with solid black
+	for i := 0; i < len(composite.Pix); i += 4 {
+		composite.Pix[i] = 0     // R
+		composite.Pix[i+1] = 0   // G
+		composite.Pix[i+2] = 0   // B
+		composite.Pix[i+3] = 255 // A
+	}
+
 	cellW := totalWidth / cols
 	cellH := totalHeight / rows
 
@@ -259,12 +272,71 @@ func ComposeGridFrame(frames map[string]*image.RGBA, cameraOrder []string, cols,
 		x := col * cellW
 		y := row * cellH
 
-		// Scale frame to cell size using simple nearest-neighbor
-		scaled := scaleImage(frame, cellW, cellH)
-		draw.Draw(composite, image.Rect(x, y, x+cellW, y+cellH), scaled, image.Point{}, draw.Src)
+		srcW := frame.Rect.Dx()
+		srcH := frame.Rect.Dy()
+
+		dstW := cellW
+		dstH := cellH
+
+		if srcW > 0 && srcH > 0 {
+			srcAspect := float64(srcW) / float64(srcH)
+			cellAspect := float64(cellW) / float64(cellH)
+
+			if srcAspect > cellAspect {
+				// Width limited
+				dstW = cellW
+				dstH = int(float64(cellW) / srcAspect)
+			} else {
+				// Height limited
+				dstH = cellH
+				dstW = int(float64(cellH) * srcAspect)
+			}
+		}
+
+		offsetX := (cellW - dstW) / 2
+		offsetY := (cellH - dstH) / 2
+
+		// Scale frame to target size preserving aspect ratio
+		scaled := scaleImage(frame, dstW, dstH)
+		draw.Draw(composite, image.Rect(x+offsetX, y+offsetY, x+offsetX+dstW, y+offsetY+dstH), scaled, image.Point{}, draw.Src)
 	}
 
+	// Draw timestamp in the bottom-right corner
+	timestampText := time.Now().Format("2006-01-02 15:04:05")
+	drawTimestamp(composite, timestampText)
+
 	return composite
+}
+
+// drawTimestamp draws a timestamp with a semi-transparent black background box in the bottom right.
+func drawTimestamp(img *image.RGBA, text string) {
+	w := len(text)*7 + 10
+	h := 18
+	x := img.Bounds().Max.X - w - 10
+	y := img.Bounds().Max.Y - h - 10
+
+	for dy := 0; dy < h; dy++ {
+		for dx := 0; dx < w; dx++ {
+			px := x + dx
+			py := y + dy
+			if px >= 0 && px < img.Bounds().Max.X && py >= 0 && py < img.Bounds().Max.Y {
+				idx := py*img.Stride + px*4
+				img.Pix[idx] = 0     // R
+				img.Pix[idx+1] = 0   // G
+				img.Pix[idx+2] = 0   // B
+				img.Pix[idx+3] = 160 // A (semi-transparent)
+			}
+		}
+	}
+
+	point := fixed.Point26_6{X: fixed.I(x + 5), Y: fixed.I(y + 13)}
+	d := &font.Drawer{
+		Dst:  img,
+		Src:  image.NewUniform(color.RGBA{R: 255, G: 255, B: 255, A: 255}),
+		Face: basicfont.Face7x13,
+		Dot:  point,
+	}
+	d.DrawString(text)
 }
 
 // scaleImage scales an RGBA image to the target dimensions using nearest-neighbor.

@@ -15,12 +15,12 @@ type MultiManager struct {
 	mu       sync.Mutex
 	logger   *logging.Logger
 	driver   *driver.Manager
-	cfg      config.Config
+	cfg      *config.Config
 	cfgPath  string
 }
 
 // NewMultiManager creates a new multi-camera manager.
-func NewMultiManager(cfg config.Config, cfgPath string, logger *logging.Logger, drv *driver.Manager) *MultiManager {
+func NewMultiManager(cfg *config.Config, cfgPath string, logger *logging.Logger, drv *driver.Manager) *MultiManager {
 	mm := &MultiManager{
 		streams: make(map[string]*Manager),
 		logger:  logger,
@@ -32,7 +32,7 @@ func NewMultiManager(cfg config.Config, cfgPath string, logger *logging.Logger, 
 	// Create a Manager for each camera in the config
 	for _, cam := range cfg.Cameras {
 		enableHTTP := cam.ID == cfg.RTSPServerCamera
-		mgr := NewFromCamera(cam, cfg, logger, drv, enableHTTP)
+		mgr := NewFromCamera(cam, *cfg, logger, drv, enableHTTP)
 		mm.streams[cam.ID] = mgr
 	}
 
@@ -64,13 +64,15 @@ func (mm *MultiManager) AddCamera(cam config.CameraSource) error {
 		return fmt.Errorf("camera %q already exists", cam.ID)
 	}
 
+	// Update config first
+	mm.cfg.Cameras = append(mm.cfg.Cameras, cam)
+	mm.cfg.Normalize()
+
 	enableHTTP := cam.ID == mm.cfg.RTSPServerCamera
-	mgr := NewFromCamera(cam, mm.cfg, mm.logger, mm.driver, enableHTTP)
+	mgr := NewFromCamera(cam, *mm.cfg, mm.logger, mm.driver, enableHTTP)
 	mm.streams[cam.ID] = mgr
 
-	// Update config
-	mm.cfg.Cameras = append(mm.cfg.Cameras, cam)
-	_ = config.Save(mm.cfg, mm.cfgPath)
+	_ = config.Save(*mm.cfg, mm.cfgPath)
 
 	// Auto-start if source is configured
 	if cam.Enabled && ((cam.Type == "rtsp" && cam.RTSPURL != "") || (cam.Type == "webcam" && cam.Device != "")) {
@@ -98,7 +100,7 @@ func (mm *MultiManager) RemoveCamera(cameraID string) error {
 		return fmt.Errorf("camera %q not found", cameraID)
 	}
 
-	mgr.Stop()
+	mgr.Close()
 	delete(mm.streams, cameraID)
 
 	// Update config
@@ -108,7 +110,7 @@ func (mm *MultiManager) RemoveCamera(cameraID string) error {
 			break
 		}
 	}
-	_ = config.Save(mm.cfg, mm.cfgPath)
+	_ = config.Save(*mm.cfg, mm.cfgPath)
 
 	return nil
 }
@@ -146,8 +148,10 @@ func (mm *MultiManager) StartAll() {
 	mm.mu.Unlock()
 
 	for _, mgr := range managers {
-		if err := mgr.Start(); err != nil {
-			mm.logger.Printf("Failed to start camera: %v", err)
+		if mgr.cam.Enabled {
+			if err := mgr.Start(); err != nil {
+				mm.logger.Printf("Failed to start camera: %v", err)
+			}
 		}
 	}
 }
@@ -247,7 +251,7 @@ func (mm *MultiManager) UpdateCamera(cam config.CameraSource) error {
 			break
 		}
 	}
-	_ = config.Save(mm.cfg, mm.cfgPath)
+	_ = config.Save(*mm.cfg, mm.cfgPath)
 	mm.mu.Unlock()
 
 	// Restart the stream with new settings
@@ -263,13 +267,13 @@ func (mm *MultiManager) UpdateCamera(cam config.CameraSource) error {
 func (mm *MultiManager) Config() config.Config {
 	mm.mu.Lock()
 	defer mm.mu.Unlock()
-	return mm.cfg
+	return *mm.cfg
 }
 
 // UpdateConfig updates the global config.
 func (mm *MultiManager) UpdateConfig(cfg config.Config) {
 	mm.mu.Lock()
-	mm.cfg = cfg
+	*mm.cfg = cfg
 	mm.mu.Unlock()
 }
 
@@ -277,5 +281,5 @@ func (mm *MultiManager) UpdateConfig(cfg config.Config) {
 func (mm *MultiManager) SaveConfig() error {
 	mm.mu.Lock()
 	defer mm.mu.Unlock()
-	return config.Save(mm.cfg, mm.cfgPath)
+	return config.Save(*mm.cfg, mm.cfgPath)
 }

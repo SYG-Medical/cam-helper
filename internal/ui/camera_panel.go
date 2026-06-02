@@ -19,13 +19,16 @@ type CameraPanel struct {
 	CameraID   string
 	CameraName string
 
-	img           *canvas.Image
-	nameLabel     *canvas.Text
-	statusDot     *canvas.Circle
-	sourceSelect  *widget.Select
-	selectionRect *canvas.Rectangle
-	overlay       *fyne.Container
-	content       *fyne.Container
+	img              *canvas.Image
+	nameLabel        *canvas.Text
+	statusDot        *canvas.Circle
+	sourceSelect     *widget.Select
+	selectionRect    *canvas.Rectangle
+	stoppedRect      *canvas.Rectangle
+	stoppedText      *canvas.Text
+	stoppedContainer *fyne.Container
+	overlay          *fyne.Container
+	content          *fyne.Container
 
 	mu      sync.Mutex
 	rgbaImg *image.RGBA
@@ -75,9 +78,22 @@ func NewCameraPanel(cameraID, cameraName string, onSelect func(string)) *CameraP
 	cp.selectionRect.StrokeWidth = 3
 	cp.selectionRect.StrokeColor = color.Transparent
 
-	// Stack containing image, text overlay, and selection border
+	// Stopped overlay
+	cp.stoppedRect = canvas.NewRectangle(color.RGBA{R: 0, G: 0, B: 0, A: 160})
+	cp.stoppedText = canvas.NewText("Durduruldu", color.RGBA{R: 200, G: 200, B: 200, A: 255})
+	cp.stoppedText.Alignment = fyne.TextAlignCenter
+	cp.stoppedText.TextSize = 16
+	cp.stoppedText.TextStyle = fyne.TextStyle{Bold: true}
+	cp.stoppedContainer = container.NewStack(
+		cp.stoppedRect,
+		container.NewCenter(cp.stoppedText),
+	)
+	cp.stoppedContainer.Hide()
+
+	// Stack containing image, text overlay, stopped overlay, and selection border
 	previewStack := container.NewStack(
 		cp.img,
+		cp.stoppedContainer,
 		container.NewVBox(
 			cp.overlay,
 		),
@@ -164,7 +180,7 @@ func (cp *CameraPanel) GetLastFrame() *image.RGBA {
 	return cp.rgbaImg
 }
 
-// SetStatus updates the status indicator color.
+// SetStatus updates the status indicator color and stopped state.
 func (cp *CameraPanel) SetStatus(running bool, hasError bool) {
 	var c color.Color
 	if running && !hasError {
@@ -177,7 +193,35 @@ func (cp *CameraPanel) SetStatus(running bool, hasError bool) {
 	fyne.Do(func() {
 		cp.statusDot.FillColor = c
 		cp.statusDot.Refresh()
+
+		if !running {
+			cp.makeGrayscale()
+			cp.stoppedContainer.Show()
+			cp.img.Refresh()
+		} else {
+			cp.stoppedContainer.Hide()
+		}
+		cp.stoppedContainer.Refresh()
 	})
+}
+
+// makeGrayscale converts the current preview image to grayscale.
+func (cp *CameraPanel) makeGrayscale() {
+	cp.mu.Lock()
+	defer cp.mu.Unlock()
+	if cp.rgbaImg == nil {
+		return
+	}
+	for i := 0; i < len(cp.rgbaImg.Pix); i += 4 {
+		r := cp.rgbaImg.Pix[i]
+		g := cp.rgbaImg.Pix[i+1]
+		b := cp.rgbaImg.Pix[i+2]
+		// Standard Luma formula
+		gray := uint8(0.299*float64(r) + 0.587*float64(g) + 0.114*float64(b))
+		cp.rgbaImg.Pix[i] = gray
+		cp.rgbaImg.Pix[i+1] = gray
+		cp.rgbaImg.Pix[i+2] = gray
+	}
 }
 
 // SetSelected updates the visual selection state.

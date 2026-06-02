@@ -681,9 +681,17 @@ func (m *Manager) broadcastFrame(width, height int, pix []byte) {
 		return
 	}
 
+	m.mu.Lock()
+	fps := m.cam.FPS
+	m.mu.Unlock()
+	if fps <= 0 {
+		fps = 30
+	}
+	interval := time.Second / time.Duration(fps)
+
 	m.rgbaImgMu.Lock()
 	now := time.Now()
-	if now.Sub(m.lastPreviewTime) < 66*time.Millisecond { // Max ~15 FPS
+	if now.Sub(m.lastPreviewTime) < interval {
 		m.rgbaImgMu.Unlock()
 		return
 	}

@@ -157,12 +157,12 @@ func LoadOrCreate() (Config, string, error) {
 		}
 	}
 
-	cfg.normalize()
+	cfg.Normalize()
 	return cfg, path, nil
 }
 
 func Save(cfg Config, path string) error {
-	cfg.normalize()
+	cfg.Normalize()
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
@@ -195,7 +195,7 @@ func NextCameraID(cameras []CameraSource) string {
 	return fmt.Sprintf("cam-%d", maxNum+1)
 }
 
-func (c *Config) normalize() {
+func (c *Config) Normalize() {
 	// Ensure minimum 2 cameras
 	for len(c.Cameras) < MinCameras {
 		id := NextCameraID(c.Cameras)
@@ -267,24 +267,26 @@ func (c *Config) normalize() {
 		c.LogLevel = "info"
 	}
 
-	// Ensure RTSPServerCamera is set to a valid camera ID
-	found := false
+	// Ensure RTSPServerCamera is set to a valid camera ID, prioritizing RTSP camera
+	var rtspCamID string
 	for _, cam := range c.Cameras {
-		if cam.ID == c.RTSPServerCamera {
-			found = true
+		if cam.Type == "rtsp" {
+			rtspCamID = cam.ID
 			break
 		}
 	}
-	if !found && len(c.Cameras) > 0 {
-		// Prefer RTSP cameras first for the server camera
+
+	if rtspCamID != "" {
+		c.RTSPServerCamera = rtspCamID
+	} else {
+		found := false
 		for _, cam := range c.Cameras {
-			if cam.Type == "rtsp" {
-				c.RTSPServerCamera = cam.ID
+			if cam.ID == c.RTSPServerCamera {
 				found = true
 				break
 			}
 		}
-		if !found {
+		if !found && len(c.Cameras) > 0 {
 			c.RTSPServerCamera = c.Cameras[0].ID
 		}
 	}
