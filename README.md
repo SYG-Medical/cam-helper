@@ -1,113 +1,114 @@
-# RTSP Virtual Cam Agent
+# SYG Camera Helper (RTSP Virtual Cam Agent)
 
-Cross-platform RTSP-to-webcam agent for SYG Medical with:
+A cross-platform multi-camera helper and RTSP-to-webcam routing agent built with Go, Fyne UI, and FFmpeg. 
 
-- Linux AppImage launcher flow
-- Windows installer flow
-- shared Go streaming core
+This tool allows you to monitor multiple camera inputs (RTSP streams and local webcams) in a configurable grid, save/load custom layouts, record composite streams, and route a selected camera output to a system-wide virtual webcam.
 
-## What this repo includes
+## Features
 
-- Go streaming core with config, autostart, health supervision, and rotating logs
-- FFmpeg process management for RTSP ingest and local relay
-- Windows packaging assets for installer-based deployment
-- Windows driver integration surface for bundling a third-party virtual camera package
-- Linux `v4l2loopback` mode for direct RTSP-to-virtual-webcam output
-- Linux AppImage launcher scripts for configure/start/stop/autostart
-- unified `Makefile` targets
+- **Multi-Camera Grid**: Configurable grid layout displaying live streams from both RTSP cameras and local physical webcams.
+- **Virtual Camera Routing**: Relays the selected camera stream to a virtual camera device (`/dev/video10` on Linux via `v4l2loopback`, or a virtual driver bridge on Windows).
+- **Layout Manager**: Save, load, and manage custom layout configurations.
+- **Grid Recording**: Record the composite grid of all live streams into a single video file.
+- **Automatic GPU Fallback**: Tests GPU/GLFW capabilities on startup and falls back to software rendering (`FYNE_RENDER=software` / `LIBGL_ALWAYS_SOFTWARE=1`) if hardware acceleration is unavailable.
+- **Low-Latency Streaming**: Pre-tuned FFmpeg arguments (`-fflags nobuffer` and `-flags low_delay`) minimize latency for both RTSP streams and local webcam feeds.
+- **Integrated Linux Launcher**: Automatic detection and runtime setup of `v4l2loopback` loopback devices with admin privilege prompts.
 
-## What this repo does not include yet
+## Default Configuration File Structure
 
-- A proprietary or third-party Windows virtual camera driver binary
-- A signed Windows installer artifact
-- Bundled `ffmpeg.exe` for Windows packaging
-
-Windows packaging binaries must be placed into `third_party/driver/` and `third_party/ffmpeg/` before packaging.
-
-## Runtime model
-
-1. The tray app loads config from the platform config directory.
-2. On Windows, it verifies that the bundled virtual camera bridge/driver payload exists.
-3. On Linux, it expects a ready `v4l2loopback` device such as `/dev/video10`.
-4. It launches FFmpeg against the configured RTSP URL.
-5. Windows relays FFmpeg output to the local bridge endpoint that feeds the virtual camera driver.
-6. Linux writes FFmpeg output directly to the configured `v4l2loopback` device.
-7. The tray app restarts components automatically if they exit unexpectedly.
-
-## Default config keys
+The application settings are saved in `~/.config/SYG/CameraHelper/config.json` (Linux) or `%APPDATA%\SYG\CameraHelper\config.json` (Windows).
 
 ```json
 {
-  "rtsp_url": "rtsp://172.28.6.234:5544/live0.264",
-  "auto_start": true,
-  "target_virtual_camera": "SYG RTSP Camera",
+  "auto_start": false,
+  "target_virtual_camera": "SYG Camera",
   "linux_video_device": "/dev/video10",
-  "width": 1280,
-  "height": 720,
-  "fps": 30,
   "driver_mode": "bridge",
   "bridge_port": 18080,
-  "driver_installer": "third_party/driver/virtual-camera-installer.exe",
-  "driver_bridge": "third_party/driver/virtual-camera-bridge.exe"
+  "driver_installer": "third_party/driver/virtual-camera-installer.dll",
+  "driver_bridge": "third_party/driver/virtual-camera-bridge.exe",
+  "ffmpeg_path": "ffmpeg",
+  "log_level": "info",
+  "cameras": [
+    {
+      "id": "cam-1",
+      "name": "Kamera 1",
+      "type": "rtsp",
+      "rtsp_url": "rtsp://192.168.1.100:554/live",
+      "device": "",
+      "width": 1280,
+      "height": 720,
+      "fps": 30,
+      "enabled": true
+    },
+    {
+      "id": "cam-2",
+      "name": "Kamera 2",
+      "type": "webcam",
+      "rtsp_url": "",
+      "device": "/dev/video0",
+      "width": 1280,
+      "height": 720,
+      "fps": 30,
+      "enabled": true
+    }
+  ],
+  "saved_layouts": [],
+  "active_layout_name": "",
+  "rtsp_server_camera": "cam-1"
 }
 ```
 
-## Build prerequisites
+## Build & Package Prerequisites
 
 - Go 1.22+
 - FFmpeg
-- Linux: `v4l2loopback` and a desktop session that supports `systray`
-- Windows packaging: NSIS (`makensis`), bundled `ffmpeg.exe`, bundled virtual camera installer, bundled bridge executable
+- **Linux**: `v4l2loopback` kernel module, X11 or Wayland display server session.
+- **Windows Packaging**: NSIS (`makensis`), bundled `ffmpeg.exe`, virtual camera installer payloads.
 
-## Linux end-user flow
+## Build Targets
 
-Build:
-
-```bash
-make package-linux
-```
-
-Result:
-
-- `dist/RTSPVirtualCamAgent-x86_64.AppImage`
-
-Runtime:
-
-1. Double-click the AppImage.
-2. Choose `Configure` and enter the RTSP URL.
-3. Choose `Start`.
-4. If `v4l2loopback` is not active yet, the launcher asks for admin rights and sets it up automatically.
-5. Browser apps should then see the created virtual webcam.
-
-Notes:
-
-- The Linux launcher prefers `yad`, then `zenity`.
-- The launcher installs an autostart desktop entry instead of asking users to edit config manually.
-- Kernel-module setup still requires an admin prompt once; this cannot be removed entirely because `v4l2loopback` is a kernel module.
-
-## Build targets
+Compile and package targets via `Makefile`:
 
 ```bash
+# Build binary on Linux
 make build-linux
+
+# Build binary for Windows (cross-compile or local)
 make build-windows
+
+# Build Windows binary inside a dev-backend Distrobox container
 make build-distrobox-windows
+
+# Build Linux AppImage
 make package-linux
+
+# Build Windows Installer (requires NSIS and assets)
 make package-windows
 ```
 
-## Suggested packaging flow
+## Linux AppImage Flow
 
-1. Put `ffmpeg.exe` in `third_party/ffmpeg/`.
-2. Put the driver installer and bridge executable in `third_party/driver/`.
-3. Run `scripts/build-windows.ps1`.
-4. Test the generated installer on a clean Windows machine.
+1. **Build**:
+   ```bash
+   make package-linux
+   ```
+   This generates `dist/SYGCameraHelper-x86_64.AppImage`.
 
-## Notes on the virtual camera driver
+2. **Execution**:
+   - Double-click the AppImage or run `./dist/SYGCameraHelper-x86_64.AppImage`.
+   - The launcher will detect if your virtual device (e.g. `/dev/video10`) is ready. If not, it prompts for root password (`pkexec` or `sudo`) to configure `v4l2loopback` automatically.
+   - The main Fyne UI opens showing the multi-camera monitor.
+   - You can add cameras, switch selected camera streams, save layouts, start/stop streams, or record them.
 
-This repo intentionally keeps the driver integration generic. The Go app expects a third-party package that can:
+3. **Nvidia GPU Acceleration on Hybrid Laptops/Bazzite**:
+   If you use a hybrid graphics laptop (Nvidia + Intel/AMD) or an immutable OS like Bazzite, force rendering onto the dedicated Nvidia GPU by running:
+   ```bash
+   __NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia ./dist/SYGCameraHelper-x86_64.AppImage
+   ```
 
-- install a webcam-visible virtual camera device silently
-- expose a helper executable or bridge that accepts a local UDP/MPEG-TS feed
-- route that feed into the installed virtual camera
+## Troubleshooting & Logs
 
-If your chosen driver uses a different ingestion model, update `internal/driver` and `internal/stream` together.
+Logs are written to:
+- **Linux**: `~/.config/SYG/CameraHelper/logs/agent.log`
+- **Windows**: `%APPDATA%\SYG\CameraHelper\logs\agent.log`
