@@ -21,8 +21,9 @@ jobs:
 
       - name: Install dependencies
         run: |
+          sudo find /etc/apt/sources.list.d/ -type f ! -name "ubuntu.sources" -delete
           sudo apt-get update
-          sudo apt-get install -y libx11-dev libxcursor-dev libxrandr-dev libxinerama-dev libxi-dev libgl1-mesa-dev xorg-dev
+          sudo apt-get install -y --no-install-recommends libx11-dev libxcursor-dev libxrandr-dev libxinerama-dev libxi-dev libgl1-mesa-dev xorg-dev
 
       - name: Build AppImage
         run: |
