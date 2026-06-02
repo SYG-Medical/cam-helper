@@ -390,8 +390,8 @@ func (m *Manager) buildRTSPArgs(cam config.CameraSource) []string {
 		"-hide_banner",
 		"-loglevel", "warning",
 		"-rtsp_transport", "tcp",
-		"-probesize", "10M",
-		"-analyzeduration", "2M",
+		"-probesize", "100K",
+		"-analyzeduration", "100K",
 		"-fflags", "nobuffer",
 		"-flags", "low_delay",
 		"-thread_queue_size", "1024",
@@ -443,6 +443,8 @@ func (m *Manager) buildWebcamArgs(cam config.CameraSource) []string {
 	args := []string{
 		"-hide_banner",
 		"-loglevel", "warning",
+		"-fflags", "nobuffer",
+		"-flags", "low_delay",
 	}
 
 	if runtime.GOOS == "linux" {

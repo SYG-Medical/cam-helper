@@ -241,12 +241,34 @@ func (m *Manager) StartBridge(ctx context.Context) (*exec.Cmd, error) {
 		return nil, nil 
 	}
 
+	// Find the server camera settings
+	var width, height, fps int
+	found := false
+	for _, cam := range m.cfg.Cameras {
+		if cam.ID == m.cfg.RTSPServerCamera {
+			width = cam.Width
+			height = cam.Height
+			fps = cam.FPS
+			found = true
+			break
+		}
+	}
+	if !found && len(m.cfg.Cameras) > 0 {
+		width = m.cfg.Cameras[0].Width
+		height = m.cfg.Cameras[0].Height
+		fps = m.cfg.Cameras[0].FPS
+	} else if !found {
+		width = 1280
+		height = 720
+		fps = 30
+	}
+
 	args := []string{
 		"--camera-name", m.cfg.TargetVirtualCamera,
 		"--listen", fmt.Sprintf("udp://127.0.0.1:%d", m.cfg.BridgePort),
-		"--width", fmt.Sprintf("%d", m.cfg.Width),
-		"--height", fmt.Sprintf("%d", m.cfg.Height),
-		"--fps", fmt.Sprintf("%d", m.cfg.FPS),
+		"--width", fmt.Sprintf("%d", width),
+		"--height", fmt.Sprintf("%d", height),
+		"--fps", fmt.Sprintf("%d", fps),
 	}
 
 	cmd := exec.CommandContext(ctx, bridge, args...)

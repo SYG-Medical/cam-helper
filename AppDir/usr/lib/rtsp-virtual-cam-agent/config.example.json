@@ -1,15 +1,38 @@
 {
-  "rtsp_url": "rtsp://172.28.6.234:5544/live0.264",
-  "auto_start": true,
-  "target_virtual_camera": "SYG RTSP Camera",
+  "auto_start": false,
+  "target_virtual_camera": "SYG Camera",
   "linux_video_device": "/dev/video10",
-  "width": 1280,
-  "height": 720,
-  "fps": 30,
   "driver_mode": "bridge",
   "bridge_port": 18080,
-  "driver_installer": "third_party/driver/virtual-camera-installer.exe",
+  "driver_installer": "third_party/driver/virtual-camera-installer.dll",
   "driver_bridge": "third_party/driver/virtual-camera-bridge.exe",
-  "ffmpeg_path": "third_party/ffmpeg/ffmpeg.exe",
-  "log_level": "info"
+  "ffmpeg_path": "ffmpeg",
+  "log_level": "info",
+  "cameras": [
+    {
+      "id": "cam-1",
+      "name": "Kamera 1",
+      "type": "rtsp",
+      "rtsp_url": "rtsp://192.168.1.100:554/live",
+      "device": "",
+      "width": 1280,
+      "height": 720,
+      "fps": 30,
+      "enabled": true
+    },
+    {
+      "id": "cam-2",
+      "name": "Kamera 2",
+      "type": "webcam",
+      "rtsp_url": "",
+      "device": "/dev/video0",
+      "width": 1280,
+      "height": 720,
+      "fps": 30,
+      "enabled": true
+    }
+  ],
+  "saved_layouts": [],
+  "active_layout_name": "",
+  "rtsp_server_camera": "cam-1"
 }

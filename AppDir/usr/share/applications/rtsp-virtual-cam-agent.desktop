@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
-Name=RTSP Virtual Cam Agent
-Comment=RTSP to virtual webcam launcher
+Name=SYG Camera Helper
+Comment=SYG Camera Helper
 Exec=rtsp-virtual-cam-agent-launcher
 Icon=rtsp-virtual-cam-agent
 Categories=AudioVideo;Utility;
