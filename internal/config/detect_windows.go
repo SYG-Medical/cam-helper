@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 // DetectWebcams enumerates connected cameras on Windows using FFmpeg's dshow list.
@@ -26,6 +27,7 @@ func DetectWebcams() []CameraSource {
 	}
 
 	cmd := exec.Command(ffmpegPath, "-list_devices", "true", "-f", "dshow", "-i", "dummy")
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	// ffmpeg prints device list to stderr, and exits with an error code since "dummy" input fails
 	output, _ := cmd.CombinedOutput()
 	
@@ -84,6 +86,7 @@ func DetectWebcams() []CameraSource {
 
 func detectWebcamsPowerShell() []CameraSource {
 	cmd := exec.Command("powershell", "-NoProfile", "-Command", "Get-PnpDevice | Where-Object {($_.Class -eq 'Camera' -or $_.Class -eq 'Image') -and $_.Status -eq 'OK'} | Select-Object -ExpandProperty FriendlyName")
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	
 	output, err := cmd.Output()
 	if err != nil {

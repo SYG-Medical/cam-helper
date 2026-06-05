@@ -69,12 +69,15 @@ func (r *Recorder) Start(width, height, fps int) error {
 
 	// Resolve ffmpeg path
 	ffmpegPath := "ffmpeg"
-	if runtime.GOOS == "windows" {
-		if p, err := exec.LookPath("ffmpeg.exe"); err == nil {
-			ffmpegPath = p
+	if exe, err := os.Executable(); err == nil {
+		localName := "ffmpeg"
+		if runtime.GOOS == "windows" {
+			localName = "ffmpeg.exe"
 		}
-	} else {
-		if p, err := exec.LookPath("ffmpeg"); err == nil {
+		localFFmpeg := filepath.Join(filepath.Dir(exe), "third_party", "ffmpeg", localName)
+		if _, err := os.Stat(localFFmpeg); err == nil {
+			ffmpegPath = localFFmpeg
+		} else if p, err := exec.LookPath(localName); err == nil {
 			ffmpegPath = p
 		}
 	}

@@ -575,18 +575,10 @@ func (m *Manager) broadcastFrame(width, height int, pix []byte) {
 	if m.rgbaImg == nil || m.rgbaImg.Rect.Dx() != width || m.rgbaImg.Rect.Dy() != height {
 		m.rgbaImg = image.NewRGBA(image.Rect(0, 0, width, height))
 	}
-	if runtime.GOOS == "windows" {
-		// Convert BGRA to RGBA
-		for i := 0; i < len(pix); i += 4 {
-			m.rgbaImg.Pix[i] = pix[i+2]   // R
-			m.rgbaImg.Pix[i+1] = pix[i+1] // G
-			m.rgbaImg.Pix[i+2] = pix[i]   // B
-			m.rgbaImg.Pix[i+3] = pix[i+3] // A
-		}
-	} else {
-		// Linux stdout is already RGBA, use fast memory copy
-		copy(m.rgbaImg.Pix, pix)
-	}
+	
+	// FFmpeg's rawvideo output is configured to "-pix_fmt rgba" for both platforms,
+	// so the byte order is already RGBA. Just use fast memory copy.
+	copy(m.rgbaImg.Pix, pix)
 
 	var buf bytes.Buffer
 	err := jpeg.Encode(&buf, m.rgbaImg, &jpeg.Options{Quality: 60})
