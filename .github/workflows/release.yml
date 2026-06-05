@@ -31,7 +31,7 @@ jobs:
           mkdir -p internal/assets/third_party/driver
           touch internal/assets/third_party/ffmpeg/placeholder.txt
           touch internal/assets/third_party/driver/placeholder.txt
-          make package-linux
+          VERSION=${{ github.ref_name }} make package-linux
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
@@ -94,6 +94,7 @@ jobs:
         shell: pwsh
         run: |
           $env:PATH += ";C:\Program Files (x86)\NSIS"
+          $env:VERSION = "${{ github.ref_name }}"
           ./scripts/build-windows.ps1
 
       - name: Upload Artifacts

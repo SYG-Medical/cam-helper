@@ -49,6 +49,7 @@ type Config struct {
 	DriverBridge        string `json:"driver_bridge"`
 	FFmpegPath          string `json:"ffmpeg_path"`
 	LogLevel            string `json:"log_level"`
+	Language            string `json:"language"`
 
 	// Multi-camera fields
 	Cameras          []CameraSource `json:"cameras"`
@@ -76,6 +77,7 @@ func Default() Config {
 		DriverBridge:        `third_party\\driver\\virtual-camera-bridge.exe`,
 		FFmpegPath:          `third_party\\ffmpeg\\ffmpeg.exe`,
 		LogLevel:            "info",
+		Language:            "tr",
 		Cameras: []CameraSource{
 			{
 				ID:      "cam-1",
@@ -265,6 +267,9 @@ func (c *Config) Normalize() {
 	}
 	if c.LogLevel == "" {
 		c.LogLevel = "info"
+	}
+	if c.Language == "" {
+		c.Language = "tr"
 	}
 
 	// Ensure RTSPServerCamera is set to a valid camera ID, prioritizing RTSP camera

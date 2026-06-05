@@ -25,7 +25,7 @@ fi
 
 echo "Building Go application..."
 CGO_ENABLED=1 GOOS=windows GOARCH=amd64 CC=x86_64-w64-mingw32-gcc \
-    go build -trimpath -ldflags="-H=windowsgui -s -w" -o "$APP_EXE" ./cmd/app
+    go build -trimpath -ldflags="-H=windowsgui -s -w -X 'rtsp-virtual-cam-agent/internal/version.Version=${VERSION}'" -o "$APP_EXE" ./cmd/app
 
 if command -v makensis &> /dev/null; then
     echo "Creating installer..."

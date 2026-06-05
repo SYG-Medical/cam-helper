@@ -10,7 +10,7 @@ APPIMAGE_TOOL="${REPO_ROOT}/.cache/tools/appimagetool.AppImage"
 mkdir -p "${APPDIR}/usr/bin" "${APPDIR}/usr/lib/rtsp-virtual-cam-agent" "${APPDIR}/usr/share/applications" "${APPDIR}/usr/share/icons/hicolor/scalable/apps" "${OUT_DIR}" "${REPO_ROOT}/.cache/tools"
 
 pushd "${REPO_ROOT}" >/dev/null
-go build -o "${APPDIR}/usr/bin/${APP_NAME}" ./cmd/app
+go build -ldflags="-X 'rtsp-virtual-cam-agent/internal/version.Version=${VERSION:-dev}'" -o "${APPDIR}/usr/bin/${APP_NAME}" ./cmd/app
 popd >/dev/null
 
 cp "${REPO_ROOT}/scripts/linux-launcher.sh" "${APPDIR}/usr/bin/${APP_NAME}-launcher"

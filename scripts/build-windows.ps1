@@ -28,7 +28,8 @@ try {
   Write-Host "Building Go app..."
   $env:GOOS = 'windows'
   $env:GOARCH = 'amd64'
-  go build -trimpath -ldflags='-H=windowsgui -s -w' -o $AppExe ./cmd/app
+  $VersionStr = if ($env:VERSION) { $env:VERSION } else { "dev" }
+  go build -trimpath -ldflags="-H=windowsgui -s -w -X 'rtsp-virtual-cam-agent/internal/version.Version=$VersionStr'" -o $AppExe ./cmd/app
   
   $Makensis = Get-Command makensis -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
   if (-not $Makensis) {
