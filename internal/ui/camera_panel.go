@@ -3,7 +3,6 @@ package ui
 import (
 	"image"
 	"image/color"
-	"runtime"
 	"sync"
 
 	"fyne.io/fyne/v2"
@@ -157,17 +156,8 @@ func (cp *CameraPanel) UpdateFrame(width, height int, pix []byte) {
 		cp.img.Image = cp.rgbaImg
 	}
 
-	if runtime.GOOS == "windows" {
-		// BGRA → RGBA
-		for i := 0; i < len(pix) && i < len(cp.rgbaImg.Pix); i += 4 {
-			cp.rgbaImg.Pix[i] = pix[i+2]
-			cp.rgbaImg.Pix[i+1] = pix[i+1]
-			cp.rgbaImg.Pix[i+2] = pix[i]
-			cp.rgbaImg.Pix[i+3] = pix[i+3]
-		}
-	} else {
-		copy(cp.rgbaImg.Pix, pix)
-	}
+	// FFmpeg provides native RGBA so we can do a fast memory copy directly
+	copy(cp.rgbaImg.Pix, pix)
 	cp.mu.Unlock()
 
 	fyne.Do(func() {

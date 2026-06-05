@@ -276,36 +276,40 @@ func (a *App) getCameraSelectedOption(cam config.CameraSource, options []string,
 }
 
 func (a *App) refreshCameraDropdowns() {
-	options, webcamMap := a.getCameraDropdownOptions()
+	go func() {
+		options, webcamMap := a.getCameraDropdownOptions()
 
-	for _, cam := range a.cfg.Cameras {
-		camID := cam.ID
-		panel, exists := a.cameraPanels[camID]
-		if !exists {
-			continue
-		}
+		fyne.Do(func() {
+			for _, cam := range a.cfg.Cameras {
+				camID := cam.ID
+				panel, exists := a.cameraPanels[camID]
+				if !exists {
+					continue
+				}
 
-		panelOptions := make([]string, len(options))
-		copy(panelOptions, options)
+				panelOptions := make([]string, len(options))
+				copy(panelOptions, options)
 
-		selected := a.getCameraSelectedOption(cam, panelOptions, webcamMap)
+				selected := a.getCameraSelectedOption(cam, panelOptions, webcamMap)
 
-		found := false
-		for _, opt := range panelOptions {
-			if opt == selected {
-				found = true
-				break
+				found := false
+				for _, opt := range panelOptions {
+					if opt == selected {
+						found = true
+						break
+					}
+				}
+				if !found {
+					lastIdx := len(panelOptions) - 1
+					panelOptions = append(panelOptions[:lastIdx], append([]string{selected}, panelOptions[lastIdx:]...)...)
+				}
+
+				panel.UpdateSources(panelOptions, selected, func(val string) {
+					a.handleSourceSelectionChanged(camID, val, webcamMap)
+				})
 			}
-		}
-		if !found {
-			lastIdx := len(panelOptions) - 1
-			panelOptions = append(panelOptions[:lastIdx], append([]string{selected}, panelOptions[lastIdx:]...)...)
-		}
-
-		panel.UpdateSources(panelOptions, selected, func(val string) {
-			a.handleSourceSelectionChanged(camID, val, webcamMap)
 		})
-	}
+	}()
 }
 
 func (a *App) handleSourceSelectionChanged(cameraID string, selectedVal string, webcamMap map[string]string) {
@@ -395,51 +399,59 @@ func (a *App) showEditCameraDialog(cameraID string) {
 		return
 	}
 
-	nameEntry := widget.NewEntry()
-	nameEntry.Text = selectedCam.Name
+	progress := dialog.NewCustom("Kameralar Aranıyor", "Lütfen bekleyin...", widget.NewProgressBarInfinite(), a.window)
+	progress.Show()
 
-	typeSelect := widget.NewSelect([]string{"rtsp", "webcam"}, nil)
-	typeSelect.SetSelected(selectedCam.Type)
+	go func() {
+		detected := config.DetectWebcams()
 
-	urlEntry := widget.NewEntry()
-	urlEntry.Text = selectedCam.RTSPURL
-	urlEntry.SetPlaceHolder(i18n.T("placeholder_url"))
+		fyne.Do(func() {
+			progress.Hide()
 
-	webcamSelect := widget.NewSelect(nil, nil)
-	detected := config.DetectWebcams()
-	var wcNames []string
-	wcDevMap := make(map[string]string)
-	for _, wc := range detected {
-		wcNames = append(wcNames, wc.Name)
-		wcDevMap[wc.Name] = wc.Device
-	}
-	if len(wcNames) == 0 {
-		wcNames = append(wcNames, i18n.T("msg_webcam_not_found"))
-	}
-	webcamSelect.Options = wcNames
-	if selectedCam.Type == "webcam" {
-		found := false
-		for k, v := range wcDevMap {
-			if v == selectedCam.Device {
-				webcamSelect.SetSelected(k)
-				found = true
-				break
+			nameEntry := widget.NewEntry()
+			nameEntry.Text = selectedCam.Name
+
+			typeSelect := widget.NewSelect([]string{"rtsp", "webcam"}, nil)
+			typeSelect.SetSelected(selectedCam.Type)
+
+			urlEntry := widget.NewEntry()
+			urlEntry.Text = selectedCam.RTSPURL
+			urlEntry.SetPlaceHolder(i18n.T("placeholder_url"))
+
+			webcamSelect := widget.NewSelect(nil, nil)
+			var wcNames []string
+			wcDevMap := make(map[string]string)
+			for _, wc := range detected {
+				wcNames = append(wcNames, wc.Name)
+				wcDevMap[wc.Name] = wc.Device
 			}
-		}
-		if !found {
-			webcamSelect.SetSelected(wcNames[0])
-		}
-	} else {
-		webcamSelect.SetSelected(wcNames[0])
-	}
+			if len(wcNames) == 0 {
+				wcNames = append(wcNames, i18n.T("msg_webcam_not_found"))
+			}
+			webcamSelect.Options = wcNames
+			if selectedCam.Type == "webcam" {
+				found := false
+				for k, v := range wcDevMap {
+					if v == selectedCam.Device {
+						webcamSelect.SetSelected(k)
+						found = true
+						break
+					}
+				}
+				if !found {
+					webcamSelect.SetSelected(wcNames[0])
+				}
+			} else {
+				webcamSelect.SetSelected(wcNames[0])
+			}
 
-	if selectedCam.Type == "rtsp" {
-		urlEntry.Show()
-		webcamSelect.Hide()
-	} else {
-		urlEntry.Hide()
-		webcamSelect.Show()
-	}
+			if selectedCam.Type == "rtsp" {
+				urlEntry.Show()
+				webcamSelect.Hide()
+			} else {
+				urlEntry.Hide()
+				webcamSelect.Show()
+			}
 
 	typeSelect.OnChanged = func(s string) {
 		if s == "rtsp" {
@@ -480,6 +492,8 @@ func (a *App) showEditCameraDialog(cameraID string) {
 	}, a.window)
 	form.Resize(fyne.NewSize(450, 400))
 	form.Show()
+		})
+	}()
 }
 
 func (a *App) buildCameraGrid() {
@@ -570,41 +584,48 @@ func (a *App) showAddCameraDialog() {
 		return
 	}
 
-	nameEntry := widget.NewEntry()
-	nameEntry.SetPlaceHolder(i18n.T("placeholder_camera_name"))
-	nameEntry.Text = i18n.T("default_camera_name", len(a.cfg.Cameras)+1)
+	progress := dialog.NewCustom("Kameralar Aranıyor", "Lütfen bekleyin...", widget.NewProgressBarInfinite(), a.window)
+	progress.Show()
 
-	sourceType := widget.NewSelect([]string{"IP", "Webcam"}, nil)
-	sourceType.SetSelected("IP")
+	go func() {
+		detected := config.DetectWebcams()
 
-	urlEntry := widget.NewEntry()
-	urlEntry.SetPlaceHolder(i18n.T("placeholder_url"))
+		fyne.Do(func() {
+			progress.Hide()
 
-	webcamSelect := widget.NewSelect(nil, nil)
-	// Populate webcams (without formatting it as an option, just the device name or label)
-	detected := config.DetectWebcams()
-	var wcNames []string
-	wcDevMap := make(map[string]string)
-	for _, wc := range detected {
-		wcNames = append(wcNames, wc.Name)
-		wcDevMap[wc.Name] = wc.Device
-	}
-	if len(wcNames) == 0 {
-		wcNames = append(wcNames, i18n.T("msg_webcam_not_found"))
-	}
-	webcamSelect.Options = wcNames
-	webcamSelect.SetSelected(wcNames[0])
-	webcamSelect.Hide()
+			nameEntry := widget.NewEntry()
+			nameEntry.SetPlaceHolder(i18n.T("placeholder_camera_name"))
+			nameEntry.Text = i18n.T("default_camera_name", len(a.cfg.Cameras)+1)
 
-	sourceType.OnChanged = func(s string) {
-		if s == "IP" {
-			urlEntry.Show()
+			sourceType := widget.NewSelect([]string{"IP", "Webcam"}, nil)
+			sourceType.SetSelected("IP")
+
+			urlEntry := widget.NewEntry()
+			urlEntry.SetPlaceHolder(i18n.T("placeholder_url"))
+
+			webcamSelect := widget.NewSelect(nil, nil)
+			var wcNames []string
+			wcDevMap := make(map[string]string)
+			for _, wc := range detected {
+				wcNames = append(wcNames, wc.Name)
+				wcDevMap[wc.Name] = wc.Device
+			}
+			if len(wcNames) == 0 {
+				wcNames = append(wcNames, i18n.T("msg_webcam_not_found"))
+			}
+			webcamSelect.Options = wcNames
+			webcamSelect.SetSelected(wcNames[0])
 			webcamSelect.Hide()
-		} else {
-			urlEntry.Hide()
-			webcamSelect.Show()
-		}
-	}
+
+			sourceType.OnChanged = func(s string) {
+				if s == "IP" {
+					urlEntry.Show()
+					webcamSelect.Hide()
+				} else {
+					urlEntry.Hide()
+					webcamSelect.Show()
+				}
+			}
 
 	formItems := []*widget.FormItem{
 		widget.NewFormItem(i18n.T("lbl_name"), nameEntry),
@@ -669,6 +690,8 @@ func (a *App) showAddCameraDialog() {
 
 	d.Resize(fyne.NewSize(450, 300))
 	d.Show()
+		})
+	}()
 }
 
 func (a *App) removeSelectedCamera() {
@@ -798,12 +821,7 @@ func (a *App) stopRecordingWithCallback(onDone func()) {
 		a.recordTimer = nil
 	}
 
-	if a.recorder.IsRecording() {
-		a.recorder.Stop()
-		a.recordBtn.SetText(i18n.T("btn_record"))
-		a.recordBtn.Icon = theme.MediaRecordIcon()
-		a.recordBtn.Importance = widget.MediumImportance
-		a.recordBtn.Refresh()
+	if !a.recorder.IsRecording() {
 		if onDone != nil {
 			onDone()
 		}
@@ -817,6 +835,9 @@ func (a *App) stopRecordingWithCallback(onDone func()) {
 		a.recordBtn.Icon = theme.MediaRecordIcon()
 		a.recordBtn.Importance = widget.MediumImportance
 		a.recordBtn.Refresh()
+		if onDone != nil {
+			onDone()
+		}
 		return
 	}
 

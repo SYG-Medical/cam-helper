@@ -11,10 +11,27 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"sync"
+	"time"
+)
+
+var (
+	cachedWebcams []CameraSource
+	cacheTime     time.Time
+	cacheMu       sync.Mutex
 )
 
 // DetectWebcams enumerates connected cameras on Windows using FFmpeg's dshow list.
 func DetectWebcams() []CameraSource {
+	cacheMu.Lock()
+	if time.Since(cacheTime) < 15*time.Second && cachedWebcams != nil {
+		res := make([]CameraSource, len(cachedWebcams))
+		copy(res, cachedWebcams)
+		cacheMu.Unlock()
+		return res
+	}
+	cacheMu.Unlock()
+
 	var cameras []CameraSource
 	idx := 1
 
@@ -78,8 +95,14 @@ func DetectWebcams() []CameraSource {
 
 	// Fallback to powershell if ffmpeg failed or returned no cameras
 	if len(cameras) == 0 {
-		return detectWebcamsPowerShell()
+		cameras = detectWebcamsPowerShell()
 	}
+
+	cacheMu.Lock()
+	cachedWebcams = make([]CameraSource, len(cameras))
+	copy(cachedWebcams, cameras)
+	cacheTime = time.Now()
+	cacheMu.Unlock()
 
 	return cameras
 }
