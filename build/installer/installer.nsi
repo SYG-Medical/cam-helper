@@ -6,6 +6,8 @@
 
 !include "MUI2.nsh"
 
+!define MUI_ICON "..\..\internal\tray\resources\icon.ico"
+
 Name "${APP_NAME}"
 OutFile "..\\..\\dist\\${APP_NAME}-Setup.exe"
 InstallDir "${INSTALL_DIR}"
@@ -13,6 +15,7 @@ RequestExecutionLevel admin
 Unicode True
 
 !insertmacro MUI_PAGE_WELCOME
+!insertmacro MUI_PAGE_COMPONENTS
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 
@@ -25,9 +28,11 @@ Unicode True
 
 !insertmacro MUI_LANGUAGE "English"
 
-Section "Install"
+Section "Main Application" SecMain
+  SectionIn RO
   SetOutPath "$INSTDIR"
   File "..\\..\\out\\windows\\${APP_EXE}"
+  File "..\\..\\internal\\tray\\resources\\icon.ico"
 
   # Bundle dependencies into third_party
   SetOutPath "$INSTDIR\\third_party\\ffmpeg"
@@ -42,14 +47,19 @@ Section "Install"
 
   SetOutPath "$INSTDIR"
   WriteUninstaller "$INSTDIR\\Uninstall.exe"
-  CreateShortcut "$SMSTARTUP\\${APP_NAME}.lnk" "$INSTDIR\\${APP_EXE}"
-  CreateShortcut "$SMPROGRAMS\\${APP_NAME}.lnk" "$INSTDIR\\${APP_EXE}"
+  CreateShortcut "$SMSTARTUP\\${APP_NAME}.lnk" "$INSTDIR\\${APP_EXE}" "" "$INSTDIR\\icon.ico" 0
+  CreateShortcut "$SMPROGRAMS\\${APP_NAME}.lnk" "$INSTDIR\\${APP_EXE}" "" "$INSTDIR\\icon.ico" 0
 
   # Add to Add/Remove Programs
   WriteRegStr HKLM "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${APP_NAME}" "DisplayName" "${APP_NAME}"
   WriteRegStr HKLM "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${APP_NAME}" "UninstallString" "$INSTDIR\\Uninstall.exe"
-  WriteRegStr HKLM "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${APP_NAME}" "DisplayIcon" "$INSTDIR\\${APP_EXE}"
+  WriteRegStr HKLM "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${APP_NAME}" "DisplayIcon" "$INSTDIR\\icon.ico"
   WriteRegStr HKLM "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${APP_NAME}" "Publisher" "${COMPANY}"
+SectionEnd
+
+Section "Desktop Shortcut" SecDesktop
+  SetOutPath "$INSTDIR"
+  CreateShortcut "$DESKTOP\\${APP_NAME}.lnk" "$INSTDIR\\${APP_EXE}" "" "$INSTDIR\\icon.ico" 0
 SectionEnd
 
 Section "Uninstall"
@@ -59,7 +69,9 @@ Section "Uninstall"
 
   Delete "$SMSTARTUP\\${APP_NAME}.lnk"
   Delete "$SMPROGRAMS\\${APP_NAME}.lnk"
+  Delete "$DESKTOP\\${APP_NAME}.lnk"
   Delete "$INSTDIR\\${APP_EXE}"
+  Delete "$INSTDIR\\icon.ico"
   Delete "$INSTDIR\\Uninstall.exe"
   RMDir /r "$INSTDIR\\third_party"
   RMDir "$INSTDIR"

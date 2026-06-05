@@ -5,7 +5,6 @@ import (
 	"sync"
 
 	"rtsp-virtual-cam-agent/internal/config"
-	"rtsp-virtual-cam-agent/internal/driver"
 	"rtsp-virtual-cam-agent/internal/logging"
 )
 
@@ -14,17 +13,15 @@ type MultiManager struct {
 	streams  map[string]*Manager // cameraID → Manager
 	mu       sync.Mutex
 	logger   *logging.Logger
-	driver   *driver.Manager
 	cfg      *config.Config
 	cfgPath  string
 }
 
 // NewMultiManager creates a new multi-camera manager.
-func NewMultiManager(cfg *config.Config, cfgPath string, logger *logging.Logger, drv *driver.Manager) *MultiManager {
+func NewMultiManager(cfg *config.Config, cfgPath string, logger *logging.Logger) *MultiManager {
 	mm := &MultiManager{
 		streams: make(map[string]*Manager),
 		logger:  logger,
-		driver:  drv,
 		cfg:     cfg,
 		cfgPath: cfgPath,
 	}
@@ -32,7 +29,7 @@ func NewMultiManager(cfg *config.Config, cfgPath string, logger *logging.Logger,
 	// Create a Manager for each camera in the config
 	for _, cam := range cfg.Cameras {
 		enableHTTP := cam.ID == cfg.RTSPServerCamera
-		mgr := NewFromCamera(cam, *cfg, logger, drv, enableHTTP)
+		mgr := NewFromCamera(cam, *cfg, logger, enableHTTP)
 		mm.streams[cam.ID] = mgr
 	}
 
@@ -69,7 +66,7 @@ func (mm *MultiManager) AddCamera(cam config.CameraSource) error {
 	mm.cfg.Normalize()
 
 	enableHTTP := cam.ID == mm.cfg.RTSPServerCamera
-	mgr := NewFromCamera(cam, *mm.cfg, mm.logger, mm.driver, enableHTTP)
+	mgr := NewFromCamera(cam, *mm.cfg, mm.logger, enableHTTP)
 	mm.streams[cam.ID] = mgr
 
 	_ = config.Save(*mm.cfg, mm.cfgPath)

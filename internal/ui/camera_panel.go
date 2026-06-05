@@ -33,16 +33,18 @@ type CameraPanel struct {
 	mu      sync.Mutex
 	rgbaImg *image.RGBA
 
-	onSelect func(cameraID string)
-	selected bool
+	onSelect     func(cameraID string)
+	onRightClick func(cameraID string, pe *fyne.PointEvent)
+	selected     bool
 }
 
 // NewCameraPanel creates a new camera panel widget.
-func NewCameraPanel(cameraID, cameraName string, onSelect func(string)) *CameraPanel {
+func NewCameraPanel(cameraID, cameraName string, onSelect func(string), onRightClick func(string, *fyne.PointEvent)) *CameraPanel {
 	cp := &CameraPanel{
-		CameraID:   cameraID,
-		CameraName: cameraName,
-		onSelect:   onSelect,
+		CameraID:     cameraID,
+		CameraName:   cameraName,
+		onSelect:     onSelect,
+		onRightClick: onRightClick,
 	}
 
 	// Create placeholder image
@@ -129,8 +131,12 @@ func (cp *CameraPanel) Tapped(_ *fyne.PointEvent) {
 	}
 }
 
-// TappedSecondary handles right-click (unused for now).
-func (cp *CameraPanel) TappedSecondary(_ *fyne.PointEvent) {}
+// TappedSecondary handles right-click.
+func (cp *CameraPanel) TappedSecondary(pe *fyne.PointEvent) {
+	if cp.onRightClick != nil {
+		cp.onRightClick(cp.CameraID, pe)
+	}
+}
 
 // UpdateSources updates the options and selection of the dropdown.
 func (cp *CameraPanel) UpdateSources(options []string, selected string, onChanged func(string)) {

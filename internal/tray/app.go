@@ -25,7 +25,6 @@ import (
 
 	"rtsp-virtual-cam-agent/internal/autostart"
 	"rtsp-virtual-cam-agent/internal/config"
-	"rtsp-virtual-cam-agent/internal/driver"
 	"rtsp-virtual-cam-agent/internal/logging"
 	"rtsp-virtual-cam-agent/internal/stream"
 	"rtsp-virtual-cam-agent/internal/ui"
@@ -41,7 +40,6 @@ type App struct {
 	cfgPath      string
 	logger       *logging.Logger
 	multiManager *stream.MultiManager
-	driver       *driver.Manager
 	recorder     *stream.Recorder
 	mu           sync.Mutex
 
@@ -73,16 +71,11 @@ func New() (*App, error) {
 		return nil, err
 	}
 
-	drv, err := driver.New(cfg, logger)
-	if err != nil {
-		return nil, err
-	}
-
 	// Auto-detect webcams and merge with config
 	detected := config.DetectWebcams()
 	cfg = mergeDetectedWebcams(cfg, detected)
 
-	multiMgr := stream.NewMultiManager(&cfg, cfgPath, logger, drv)
+	multiMgr := stream.NewMultiManager(&cfg, cfgPath, logger)
 	recorder := stream.NewRecorder(logger)
 
 	a := app.NewWithID("com.syg.camera-helper")
@@ -96,7 +89,6 @@ func New() (*App, error) {
 		cfgPath:      cfgPath,
 		logger:       logger,
 		multiManager: multiMgr,
-		driver:       drv,
 		recorder:     recorder,
 		cameraPanels: make(map[string]*ui.CameraPanel),
 		cameraOrder:  getCameraOrder(cfg.Cameras),
@@ -234,7 +226,7 @@ func (a *App) updateStartStopAllBtn(running bool) {
 		if running {
 			a.startStopAllBtn.SetText("Tümünü Durdur")
 			a.startStopAllBtn.Icon = theme.MediaStopIcon()
-			a.startStopAllBtn.Importance = widget.DangerImportance
+			a.startStopAllBtn.Importance = widget.WarningImportance
 		} else {
 			a.startStopAllBtn.SetText("Tümünü Başlat")
 			a.startStopAllBtn.Icon = theme.MediaPlayIcon()
@@ -245,7 +237,7 @@ func (a *App) updateStartStopAllBtn(running bool) {
 }
 
 func (a *App) getCameraDropdownOptions() ([]string, map[string]string) {
-	options := []string{"Pasif (Devre Dışı)", "RTSP Kamera"}
+	options := []string{"Pasif (Devre Dışı)", "IP Kamera"}
 	webcamMap := make(map[string]string)
 
 	detected := config.DetectWebcams()
@@ -255,7 +247,6 @@ func (a *App) getCameraDropdownOptions() ([]string, map[string]string) {
 		webcamMap[label] = wc.Device
 	}
 
-	options = append(options, "Detaylı Ayarları Düzenle...")
 	return options, webcamMap
 }
 
@@ -264,7 +255,7 @@ func (a *App) getCameraSelectedOption(cam config.CameraSource, options []string,
 		return "Pasif (Devre Dışı)"
 	}
 	if cam.Type == "rtsp" {
-		return "RTSP Kamera"
+		return "IP Kamera"
 	}
 	if cam.Type == "webcam" {
 		for label, dev := range webcamMap {
@@ -311,11 +302,6 @@ func (a *App) refreshCameraDropdowns() {
 }
 
 func (a *App) handleSourceSelectionChanged(cameraID string, selectedVal string, webcamMap map[string]string) {
-	if selectedVal == "Detaylı Ayarları Düzenle..." {
-		a.showEditCameraDialog(cameraID)
-		return
-	}
-
 	var camIdx = -1
 	for i, c := range a.cfg.Cameras {
 		if c.ID == cameraID {
@@ -334,18 +320,18 @@ func (a *App) handleSourceSelectionChanged(cameraID string, selectedVal string, 
 
 	if selectedVal == "Pasif (Devre Dışı)" {
 		cam.Enabled = false
-	} else if selectedVal == "RTSP Kamera" {
+	} else if selectedVal == "IP Kamera" {
 		// Check if there is already an RTSP camera other than this one
 		hasOtherRTSP := false
 		for i, c := range a.cfg.Cameras {
-			if i != camIdx && c.Type == "rtsp" {
+			if i != camIdx && c.Type == "rtsp" && c.Enabled {
 				hasOtherRTSP = true
 				break
 			}
 		}
 		if hasOtherRTSP {
 			a.mu.Unlock()
-			dialog.ShowError(fmt.Errorf("En fazla 1 adet RTSP kamera eklenmesine izin verilir."), a.window)
+			dialog.ShowError(fmt.Errorf("En fazla 1 adet IP kamera eklenmesine izin verilir."), a.window)
 			a.refreshCameraDropdowns()
 			return
 		}
@@ -405,56 +391,35 @@ func (a *App) showEditCameraDialog(cameraID string) {
 	nameEntry := widget.NewEntry()
 	nameEntry.SetText(selectedCam.Name)
 
-	sourceType := widget.NewRadioGroup([]string{"RTSP", "Webcam"}, nil)
+	sourceType := widget.NewRadioGroup([]string{"IP", "Webcam"}, nil)
 	if selectedCam.Type == "webcam" {
 		sourceType.SetSelected("Webcam")
 	} else {
-		sourceType.SetSelected("RTSP")
+		sourceType.SetSelected("IP")
 	}
 
 	urlEntry := widget.NewEntry()
 	urlEntry.SetText(selectedCam.RTSPURL)
-	urlEntry.SetPlaceHolder("rtsp://...")
-
-	deviceEntry := widget.NewEntry()
-	deviceEntry.SetText(selectedCam.Device)
-	deviceEntry.SetPlaceHolder("/dev/video0")
+	urlEntry.SetPlaceHolder("http://... veya rtsp://...")
 
 	if selectedCam.Type == "webcam" {
 		urlEntry.Disable()
-		deviceEntry.Enable()
 	} else {
 		urlEntry.Enable()
-		deviceEntry.Disable()
 	}
 
 	sourceType.OnChanged = func(selected string) {
-		if selected == "RTSP" {
+		if selected == "IP" {
 			urlEntry.Enable()
-			deviceEntry.Disable()
 		} else {
 			urlEntry.Disable()
-			deviceEntry.Enable()
 		}
 	}
-
-	widthEntry := widget.NewEntry()
-	widthEntry.SetText(fmt.Sprintf("%d", selectedCam.Width))
-
-	heightEntry := widget.NewEntry()
-	heightEntry.SetText(fmt.Sprintf("%d", selectedCam.Height))
-
-	fpsEntry := widget.NewEntry()
-	fpsEntry.SetText(fmt.Sprintf("%d", selectedCam.FPS))
 
 	formItems := []*widget.FormItem{
 		widget.NewFormItem("Kamera İsmi", nameEntry),
 		widget.NewFormItem("Tip", sourceType),
-		widget.NewFormItem("RTSP URL", urlEntry),
-		widget.NewFormItem("Cihaz Yolu", deviceEntry),
-		widget.NewFormItem("Genişlik (px)", widthEntry),
-		widget.NewFormItem("Yükseklik (px)", heightEntry),
-		widget.NewFormItem("FPS", fpsEntry),
+		widget.NewFormItem("IP URL", urlEntry),
 	}
 
 	d := dialog.NewForm(selectedCam.Name+" - Detaylı Ayarlar", "Kaydet", "İptal", formItems, func(ok bool) {
@@ -464,17 +429,17 @@ func (a *App) showEditCameraDialog(cameraID string) {
 			return
 		}
 
-		if sourceType.Selected == "RTSP" {
+		if sourceType.Selected == "IP" {
 			// Check if there is already an RTSP camera other than this one
 			hasOtherRTSP := false
 			for i, c := range a.cfg.Cameras {
-				if i != selectedIdx && c.Type == "rtsp" {
+				if i != selectedIdx && c.Type == "rtsp" && c.Enabled {
 					hasOtherRTSP = true
 					break
 				}
 			}
-			if hasOtherRTSP {
-				dialog.ShowError(fmt.Errorf("En fazla 1 adet RTSP kamera eklenmesine izin verilir."), a.window)
+			if hasOtherRTSP && a.cfg.Cameras[selectedIdx].Enabled {
+				dialog.ShowError(fmt.Errorf("En fazla 1 adet IP kamera eklenmesine izin verilir."), a.window)
 				return
 			}
 		}
@@ -482,27 +447,13 @@ func (a *App) showEditCameraDialog(cameraID string) {
 		a.mu.Lock()
 		cam := &a.cfg.Cameras[selectedIdx]
 		cam.Name = nameEntry.Text
-		if sourceType.Selected == "RTSP" {
+		if sourceType.Selected == "IP" {
 			cam.Type = "rtsp"
 		} else {
 			cam.Type = "webcam"
 		}
-		cam.RTSPURL = urlEntry.Text
-		cam.Device = deviceEntry.Text
-
-		var w, h, f int
-		fmt.Sscanf(widthEntry.Text, "%d", &w)
-		fmt.Sscanf(heightEntry.Text, "%d", &h)
-		fmt.Sscanf(fpsEntry.Text, "%d", &f)
-		if w > 0 {
-			cam.Width = w
-		}
-		if h > 0 {
-			cam.Height = h
-		}
-		if f > 0 {
-			cam.FPS = f
-		}
+		cam.RTSPURL = strings.TrimSpace(urlEntry.Text)
+		// We no longer update Device or resolution/fps from this dialog.
 
 		_ = config.Save(*a.cfg, a.cfgPath)
 
@@ -528,6 +479,8 @@ func (a *App) buildCameraGrid() {
 	for _, cam := range a.cfg.Cameras {
 		panel := ui.NewCameraPanel(cam.ID, cam.Name, func(cameraID string) {
 			a.selectCamera(cameraID)
+		}, func(cameraID string, pe *fyne.PointEvent) {
+			a.showCameraContextMenu(cameraID, pe)
 		})
 		a.cameraPanels[cam.ID] = panel
 		objects = append(objects, panel)
@@ -554,6 +507,8 @@ func (a *App) rebuildGrid() {
 		if !exists {
 			panel = ui.NewCameraPanel(cam.ID, cam.Name, func(cameraID string) {
 				a.selectCamera(cameraID)
+			}, func(cameraID string, pe *fyne.PointEvent) {
+				a.showCameraContextMenu(cameraID, pe)
 			})
 		}
 		newPanels[cam.ID] = panel
@@ -606,11 +561,11 @@ func (a *App) showAddCameraDialog() {
 	nameEntry.SetPlaceHolder("Kamera ismi")
 	nameEntry.SetText(fmt.Sprintf("Kamera %d", len(a.cfg.Cameras)+1))
 
-	sourceType := widget.NewRadioGroup([]string{"RTSP", "Webcam"}, nil)
-	sourceType.SetSelected("RTSP")
+	sourceType := widget.NewRadioGroup([]string{"IP", "Webcam"}, nil)
+	sourceType.SetSelected("IP")
 
 	urlEntry := widget.NewEntry()
-	urlEntry.SetPlaceHolder("rtsp://...")
+	urlEntry.SetPlaceHolder("http://... veya rtsp://...")
 
 	// Detect webcams for dropdown
 	webcams := config.DetectWebcams()
@@ -632,7 +587,7 @@ func (a *App) showAddCameraDialog() {
 	webcamSelect.Hide()
 
 	sourceType.OnChanged = func(selected string) {
-		if selected == "RTSP" {
+		if selected == "IP" {
 			urlEntry.Show()
 			webcamSelect.Hide()
 		} else {
@@ -644,7 +599,7 @@ func (a *App) showAddCameraDialog() {
 	formItems := []*widget.FormItem{
 		widget.NewFormItem("İsim", nameEntry),
 		widget.NewFormItem("Kaynak", sourceType),
-		widget.NewFormItem("RTSP URL", urlEntry),
+		widget.NewFormItem("IP URL", urlEntry),
 		widget.NewFormItem("Webcam", webcamSelect),
 	}
 
@@ -653,17 +608,17 @@ func (a *App) showAddCameraDialog() {
 			return
 		}
 
-		if sourceType.Selected == "RTSP" {
+		if sourceType.Selected == "IP" {
 			// Check if there is already an RTSP camera
 			hasRTSP := false
 			for _, c := range a.cfg.Cameras {
-				if c.Type == "rtsp" {
+				if c.Type == "rtsp" && c.Enabled {
 					hasRTSP = true
 					break
 				}
 			}
 			if hasRTSP {
-				dialog.ShowError(fmt.Errorf("En fazla 1 adet RTSP kamera eklenmesine izin verilir."), a.window)
+				dialog.ShowError(fmt.Errorf("En fazla 1 adet IP kamera eklenmesine izin verilir."), a.window)
 				return
 			}
 		}
@@ -677,9 +632,9 @@ func (a *App) showAddCameraDialog() {
 			Enabled: true,
 		}
 
-		if sourceType.Selected == "RTSP" {
+		if sourceType.Selected == "IP" {
 			cam.Type = "rtsp"
-			cam.RTSPURL = urlEntry.Text
+			cam.RTSPURL = strings.TrimSpace(urlEntry.Text)
 		} else {
 			cam.Type = "webcam"
 			if sel := webcamSelect.Selected; sel != "" {
@@ -697,7 +652,7 @@ func (a *App) showAddCameraDialog() {
 
 		if prevServerCam != a.cfg.RTSPServerCamera {
 			a.multiManager.Close()
-			a.multiManager = stream.NewMultiManager(a.cfg, a.cfgPath, a.logger, a.driver)
+			a.multiManager = stream.NewMultiManager(a.cfg, a.cfgPath, a.logger)
 			if a.cfg.AutoStart {
 				a.multiManager.StartAll()
 			}
@@ -742,7 +697,7 @@ func (a *App) removeSelectedCamera() {
 
 		if prevServerCam != a.cfg.RTSPServerCamera {
 			a.multiManager.Close()
-			a.multiManager = stream.NewMultiManager(a.cfg, a.cfgPath, a.logger, a.driver)
+			a.multiManager = stream.NewMultiManager(a.cfg, a.cfgPath, a.logger)
 			if a.cfg.AutoStart {
 				a.multiManager.StartAll()
 			}
@@ -912,23 +867,6 @@ func (a *App) stopRecordingWithCallback(onDone func()) {
 // --- Settings Dialog ---
 
 func (a *App) showSettingsDialog() {
-	// General settings
-	virtualCamEntry := widget.NewEntry()
-	virtualCamEntry.SetText(a.cfg.LinuxVideoDevice)
-
-	// RTSP server camera dropdown
-	cameraNames := make([]string, len(a.cfg.Cameras))
-	for i, c := range a.cfg.Cameras {
-		cameraNames[i] = fmt.Sprintf("%s (%s)", c.Name, c.ID)
-	}
-	rtspServerSelect := widget.NewSelect(cameraNames, nil)
-	for i, c := range a.cfg.Cameras {
-		if c.ID == a.cfg.RTSPServerCamera {
-			rtspServerSelect.SetSelected(cameraNames[i])
-			break
-		}
-	}
-
 	autostartCheck := widget.NewCheck("Otomatik başlat", nil)
 	autostartCheck.SetChecked(a.cfg.AutoStart)
 
@@ -945,10 +883,6 @@ func (a *App) showSettingsDialog() {
 
 	settingsContent := container.NewVBox(
 		widget.NewLabelWithStyle("── Genel Ayarlar ──", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
-		widget.NewForm(
-			widget.NewFormItem("Sanal Kamera Device", virtualCamEntry),
-			widget.NewFormItem("RTSP Server Kamerası", rtspServerSelect),
-		),
 		autostartCheck,
 		widget.NewSeparator(),
 		container.NewGridWithColumns(2, configBtn, logsBtn),
@@ -960,42 +894,10 @@ func (a *App) showSettingsDialog() {
 	d.SetOnClosed(func() {
 		a.mu.Lock()
 		// General settings
-		a.cfg.LinuxVideoDevice = virtualCamEntry.Text
 		a.cfg.AutoStart = autostartCheck.Checked
-
-		// RTSP server camera
-		var prevServerCam = a.cfg.RTSPServerCamera
-		if sel := rtspServerSelect.Selected; sel != "" {
-			for _, c := range a.cfg.Cameras {
-				expected := fmt.Sprintf("%s (%s)", c.Name, c.ID)
-				if expected == sel {
-					a.cfg.RTSPServerCamera = c.ID
-					break
-				}
-			}
-		}
-
 		_ = config.Save(*a.cfg, a.cfgPath)
 
-		// Update manager configs
-		a.multiManager.UpdateConfig(*a.cfg)
-
-		// If the RTSP server camera changed, we need to re-orchestrate
-		if prevServerCam != a.cfg.RTSPServerCamera {
-			a.mu.Unlock()
-			a.multiManager.Close()
-			
-			a.mu.Lock()
-			a.multiManager = stream.NewMultiManager(a.cfg, a.cfgPath, a.logger, a.driver)
-			a.mu.Unlock()
-			
-			a.rebuildGrid()
-			if a.cfg.AutoStart {
-				a.multiManager.StartAll()
-			}
-		} else {
-			a.mu.Unlock()
-		}
+		a.mu.Unlock()
 
 		if autostartCheck.Checked {
 			_ = autostart.SetEnabled(true)
@@ -1095,7 +997,7 @@ func (a *App) showLoadLayoutDialog() {
 		a.mu.Unlock()
 
 		// Rebuild everything
-		a.multiManager = stream.NewMultiManager(a.cfg, a.cfgPath, a.logger, a.driver)
+		a.multiManager = stream.NewMultiManager(a.cfg, a.cfgPath, a.logger)
 		a.rebuildGrid()
 
 		// Start all
@@ -1242,3 +1144,79 @@ func openPath(target string) {
 // Ensure unused imports are satisfied
 var _ = sort.Strings
 var _ = canvas.NewImageFromImage
+
+func (a *App) showCameraContextMenu(cameraID string, pe *fyne.PointEvent) {
+	menu := fyne.NewMenu("",
+		fyne.NewMenuItem("Düzenle", func() {
+			a.showEditCameraDialog(cameraID)
+		}),
+		fyne.NewMenuItem("Sadece bu kamera için kayıt başlat", func() {
+			a.toggleSingleCameraRecording(cameraID)
+		}),
+	)
+	
+	widget.ShowPopUpMenuAtPosition(menu, a.window.Canvas(), pe.AbsolutePosition)
+}
+
+func (a *App) toggleSingleCameraRecording(cameraID string) {
+	if a.recorder.IsRecording() {
+		a.stopRecording()
+	} else {
+		a.startSingleCameraRecording(cameraID)
+	}
+}
+
+func (a *App) startSingleCameraRecording(cameraID string) {
+	gridW := 1280
+	gridH := 720
+	fps := 15
+
+	if err := a.recorder.Start(gridW, gridH, fps); err != nil {
+		dialog.ShowError(err, a.window)
+		return
+	}
+
+	a.recordStart = time.Now()
+	a.recordBtn.SetText("Durdur")
+	a.recordBtn.Icon = theme.MediaStopIcon()
+	a.recordBtn.Importance = widget.DangerImportance
+	a.recordBtn.Refresh()
+
+	go a.singleRecordLoop(cameraID, gridW, gridH)
+
+	if a.recordTimer != nil {
+		a.recordTimer.Stop()
+	}
+	a.recordTimer = time.NewTicker(time.Second)
+	go func() {
+		for range a.recordTimer.C {
+			elapsed := time.Since(a.recordStart).Truncate(time.Second)
+			fyne.Do(func() {
+				a.recordBtn.SetText(fmt.Sprintf("Durdur (%s)", elapsed))
+				a.recordBtn.Refresh()
+			})
+		}
+	}()
+}
+
+func (a *App) singleRecordLoop(cameraID string, width, height int) {
+	ticker := time.NewTicker(time.Second / 15) // 15 FPS
+	defer ticker.Stop()
+
+	for range ticker.C {
+		if !a.recorder.IsRecording() {
+			return
+		}
+
+		frames := make(map[string]*image.RGBA)
+		panel, exists := a.cameraPanels[cameraID]
+		if exists {
+			if frame := panel.GetLastFrame(); frame != nil {
+				frames[cameraID] = frame
+			}
+		}
+
+		composite := stream.ComposeGridFrame(frames, []string{cameraID}, 1, 1, width, height)
+		a.recorder.WriteFrame(composite)
+	}
+}
