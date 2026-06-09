@@ -40,6 +40,7 @@ fi
 # 3. Persist for reboots
 mkdir -p /etc/modprobe.d /etc/modules-load.d
 echo "v4l2loopback" > /etc/modules-load.d/rtsp-virtual-cam-agent.conf
+DEV_NUM="${DEVICE_PATH#/dev/video}"
 cat > /etc/modprobe.d/rtsp-virtual-cam-agent.conf <<EOF
-options v4l2loopback devices=4 video_nr=0,1,2,5 card_label="OBS Virtual Camera,Virtual Camera 1,Virtual Camera 2,${LABEL}" exclusive_caps=1,1,1,1
+options v4l2loopback devices=1 video_nr=${DEV_NUM} card_label="${LABEL}" exclusive_caps=1
 EOF

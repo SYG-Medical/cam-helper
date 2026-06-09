@@ -15,7 +15,6 @@ go build -ldflags="-X 'nystavision/internal/version.Version=${VERSION:-dev}'" -o
 popd >/dev/null
 
 cp "${REPO_ROOT}/scripts/linux-launcher.sh" "${APPDIR}/usr/bin/${APP_NAME}-launcher"
-cp "${REPO_ROOT}/scripts/setup-v4l2loopback.sh" "${APPDIR}/usr/lib/${APP_NAME}/setup-v4l2loopback.sh"
 cp "${REPO_ROOT}/config.example.json" "${APPDIR}/usr/lib/${APP_NAME}/config.example.json"
 cp "${REPO_ROOT}/build/linux/nystavision.desktop" "${APPDIR}/usr/share/applications/"
 cp "${REPO_ROOT}/build/linux/nystavision.desktop" "${APPDIR}/"
@@ -23,7 +22,7 @@ cp "${REPO_ROOT}/build/linux/nystavision.svg" "${APPDIR}/usr/share/icons/hicolor
 cp "${REPO_ROOT}/build/linux/nystavision.svg" "${APPDIR}/"
 cp "${REPO_ROOT}/build/linux/AppRun" "${APPDIR}/AppRun"
 
-chmod +x "${APPDIR}/AppRun" "${APPDIR}/usr/bin/${APP_NAME}" "${APPDIR}/usr/bin/${APP_NAME}-launcher" "${APPDIR}/usr/lib/${APP_NAME}/setup-v4l2loopback.sh"
+chmod +x "${APPDIR}/AppRun" "${APPDIR}/usr/bin/${APP_NAME}" "${APPDIR}/usr/bin/${APP_NAME}-launcher"
 
 if [[ ! -x "${APPIMAGE_TOOL}" ]]; then
   if command -v curl >/dev/null 2>&1; then

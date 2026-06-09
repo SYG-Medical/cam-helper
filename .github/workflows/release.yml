@@ -37,7 +37,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: linux-appimage
-          path: dist/SYGCameraHelper-x86_64.AppImage
+          path: dist/NystaVision-x86_64.AppImage
 
   build-windows:
     name: Build Windows Standalone
@@ -121,7 +121,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            all-artifacts/SYGCameraHelper-x86_64.AppImage
+            all-artifacts/NystaVision-x86_64.AppImage
             all-artifacts/*.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
