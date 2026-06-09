@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"rtsp-virtual-cam-agent/internal/config"
+	"nystavision/internal/config"
 )
 
 const maxLogSizeBytes = 2 * 1024 * 1024

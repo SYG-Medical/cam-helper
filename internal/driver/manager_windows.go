@@ -9,14 +9,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"runtime"
 	"strings"
 	"syscall"
 	"unsafe"
-	"reflect"
-	"runtime"
 
-	"rtsp-virtual-cam-agent/internal/config"
-	"rtsp-virtual-cam-agent/internal/logging"
+	"nystavision/internal/config"
+	"nystavision/internal/logging"
 
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
@@ -171,7 +171,7 @@ func (m *Manager) checkFilterInRegistry(name string) bool {
 		if err != nil {
 			continue
 		}
-		
+
 		subkeys, err := k.ReadSubKeyNames(-1)
 		if err != nil {
 			k.Close()
@@ -208,7 +208,7 @@ func (m *Manager) configureUnityCaptureName(name string) {
 func (m *Manager) overrideDirectShowFriendlyName(name string) {
 	// UnityCapture CLSID is {5C2CD55C-92AD-4999-8666-912BD3E70010}
 	const unityCaptureInstance = `SOFTWARE\Classes\CLSID\{860BB310-5D01-11D0-BD3B-00A0C911CE86}\Instance\{5C2CD55C-92AD-4999-8666-912BD3E70010}`
-	
+
 	// Open with write permissions to set the FriendlyName
 	k, err := registry.OpenKey(registry.LOCAL_MACHINE, unityCaptureInstance, registry.SET_VALUE)
 	if err != nil {
@@ -216,7 +216,7 @@ func (m *Manager) overrideDirectShowFriendlyName(name string) {
 		return
 	}
 	defer k.Close()
-	
+
 	if err := k.SetStringValue("FriendlyName", name); err != nil {
 		m.logger.Printf("warning: failed to set FriendlyName in registry: %v", err)
 	} else {
@@ -238,7 +238,7 @@ func (m *Manager) StartBridge(ctx context.Context) (*exec.Cmd, error) {
 	bridge := m.BridgePath()
 	if _, err := os.Stat(bridge); err != nil {
 		m.logger.Printf("virtual camera bridge not found, attempting direct mode")
-		return nil, nil 
+		return nil, nil
 	}
 
 	// Find the server camera settings
@@ -503,19 +503,19 @@ var (
 
 func createNullDACLSecurityAttributes() (*windows.SecurityAttributes, error) {
 	var sd windows.SECURITY_DESCRIPTOR
-	
+
 	// InitializeSecurityDescriptor(&sd, 1)
 	r1, _, err := procInitializeSecurityDescriptor.Call(uintptr(unsafe.Pointer(&sd)), 1)
 	if r1 == 0 {
 		return nil, fmt.Errorf("InitializeSecurityDescriptor failed: %w", err)
 	}
-	
+
 	// SetSecurityDescriptorDacl(&sd, TRUE (1), nil (0), FALSE (0))
 	r1, _, err = procSetSecurityDescriptorDacl.Call(uintptr(unsafe.Pointer(&sd)), 1, 0, 0)
 	if r1 == 0 {
 		return nil, fmt.Errorf("SetSecurityDescriptorDacl failed: %w", err)
 	}
-	
+
 	var sa windows.SecurityAttributes
 	sa.Length = uint32(unsafe.Sizeof(sa))
 	sa.SecurityDescriptor = &sd

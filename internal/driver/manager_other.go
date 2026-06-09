@@ -14,8 +14,8 @@ import (
 	"syscall"
 	"time"
 
-	"rtsp-virtual-cam-agent/internal/config"
-	"rtsp-virtual-cam-agent/internal/logging"
+	"nystavision/internal/config"
+	"nystavision/internal/logging"
 )
 
 type Manager struct {

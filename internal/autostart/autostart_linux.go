@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	desktopFile = "rtsp-virtual-cam-agent.desktop"
+	desktopFile = "nystavision.desktop"
 )
 
 func IsEnabled() (bool, error) {
@@ -64,10 +64,10 @@ func SetEnabled(enabled bool) error {
 
 	content := fmt.Sprintf(`[Desktop Entry]
 Type=Application
-Name=SYG Camera Helper
-Comment=SYG Camera Helper Background Agent
+Name=NystaVision
+Comment=NystaVision Camera Monitor
 Exec="%s"
-Icon=rtsp-virtual-cam-agent
+Icon=nystavision
 Terminal=false
 X-GNOME-Autostart-enabled=true
 Categories=Video;Utility;

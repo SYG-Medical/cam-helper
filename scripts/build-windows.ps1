@@ -3,10 +3,8 @@ $ErrorActionPreference = 'Stop'
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $OutDir = Join-Path $RepoRoot 'out/windows'
 $DistDir = Join-Path $RepoRoot 'dist'
-$AppExe = Join-Path $OutDir 'rtsp-virtual-cam-agent.exe'
+$AppExe = Join-Path $OutDir 'SYG Medical - NystaVision.exe'
 $FfmpegPath = Join-Path $RepoRoot 'internal/assets/third_party/ffmpeg/ffmpeg.exe'
-$DriverDll = Join-Path $RepoRoot 'internal/assets/third_party/driver/virtual-camera-installer.dll'
-$BridgeExe = Join-Path $RepoRoot 'internal/assets/third_party/driver/virtual-camera-bridge.exe'
 
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 if (Test-Path $DistDir) {
@@ -18,10 +16,6 @@ if (-not (Test-Path $FfmpegPath)) {
     Write-Warning "Missing bundled ffmpeg.exe at $FfmpegPath. Run scripts/fetch-deps.ps1 first."
     exit 1
 }
-if (-not (Test-Path $DriverDll)) { 
-    Write-Warning "Missing virtual camera DLL at $DriverDll. Run scripts/fetch-deps.ps1 first."
-    exit 1
-}
 
 Push-Location $RepoRoot
 try {
@@ -29,7 +23,7 @@ try {
   $env:GOOS = 'windows'
   $env:GOARCH = 'amd64'
   $VersionStr = if ($env:VERSION) { $env:VERSION } else { "dev" }
-  go build -trimpath -ldflags="-H=windowsgui -s -w -X 'rtsp-virtual-cam-agent/internal/version.Version=$VersionStr'" -o $AppExe ./cmd/app
+  go build -trimpath -ldflags="-H=windowsgui -s -w -X 'nystavision/internal/version.Version=$VersionStr'" -o $AppExe ./cmd/app
   
   $Makensis = Get-Command makensis -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
   if (-not $Makensis) {

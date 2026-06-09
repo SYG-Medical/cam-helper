@@ -21,7 +21,7 @@ import (
 	"golang.org/x/image/font/basicfont"
 	"golang.org/x/image/math/fixed"
 
-	"rtsp-virtual-cam-agent/internal/logging"
+	"nystavision/internal/logging"
 )
 
 // Recorder records the composite camera grid view as an MP4 file.
@@ -62,7 +62,7 @@ func (r *Recorder) Start(width, height, fps int) error {
 	// Create temp file
 	tempDir := os.TempDir()
 	timestamp := time.Now().Format("20060102_150405")
-	r.tempFile = filepath.Join(tempDir, fmt.Sprintf("syg_recording_%s.mp4", timestamp))
+	r.tempFile = filepath.Join(tempDir, fmt.Sprintf("nystavision_rec_%s.mp4", timestamp))
 	r.width = width
 	r.height = height
 	r.fps = fps
@@ -304,10 +304,14 @@ func ComposeGridFrame(frames map[string]*image.RGBA, cameraOrder []string, cols,
 		draw.Draw(composite, image.Rect(x+offsetX, y+offsetY, x+offsetX+dstW, y+offsetY+dstH), scaled, image.Point{}, draw.Src)
 	}
 
-	// Draw timestamp in the bottom-right corner
+	return composite
+}
+
+// ComposeGridFrameWithTimestamp creates a composite image with timestamp overlay (used for the final general video).
+func ComposeGridFrameWithTimestamp(frames map[string]*image.RGBA, cameraOrder []string, cols, rows, totalWidth, totalHeight int) *image.RGBA {
+	composite := ComposeGridFrame(frames, cameraOrder, cols, rows, totalWidth, totalHeight)
 	timestampText := time.Now().Format("2006-01-02 15:04:05")
 	drawTimestamp(composite, timestampText)
-
 	return composite
 }
 

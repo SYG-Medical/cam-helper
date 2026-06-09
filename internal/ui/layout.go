@@ -2,7 +2,8 @@ package ui
 
 // CalculateGrid returns the number of columns and rows for a given camera count.
 // The layout adapts as cameras are added:
-//   2 → 2×1, 3-4 → 2×2, 5-6 → 3×2, 7-9 → 3×3
+//
+//	2 → 2×1, 3-4 → 2×2, 5-6 → 3×2, 7-9 → 3×3
 func CalculateGrid(cameraCount int) (cols, rows int) {
 	switch {
 	case cameraCount <= 1:

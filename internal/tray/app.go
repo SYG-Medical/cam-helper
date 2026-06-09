@@ -1,10 +1,10 @@
 package tray
 
 import (
+	"context"
 	_ "embed"
 	"fmt"
 	"image"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,13 +24,13 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
-	"rtsp-virtual-cam-agent/internal/autostart"
-	"rtsp-virtual-cam-agent/internal/config"
-	"rtsp-virtual-cam-agent/internal/i18n"
-	"rtsp-virtual-cam-agent/internal/logging"
-	"rtsp-virtual-cam-agent/internal/stream"
-	"rtsp-virtual-cam-agent/internal/ui"
-	"rtsp-virtual-cam-agent/internal/version"
+	"nystavision/internal/autostart"
+	"nystavision/internal/config"
+	"nystavision/internal/i18n"
+	"nystavision/internal/logging"
+	"nystavision/internal/stream"
+	"nystavision/internal/ui"
+	"nystavision/internal/version"
 )
 
 //go:embed resources/icon.png
@@ -43,7 +43,7 @@ type App struct {
 	cfgPath      string
 	logger       *logging.Logger
 	multiManager *stream.MultiManager
-	recorder     *stream.Recorder
+	postProc     *stream.PostProcessor
 	mu           sync.Mutex
 
 	// UI elements
@@ -57,10 +57,23 @@ type App struct {
 	recordTimer     *time.Ticker
 	recordStart     time.Time
 
+	// Tutorial button references (for spotlight highlight)
+	addBtn      *widget.Button
+	startAllRef *widget.Button
+	settingsRef *widget.Button
+
 	// Camera ordering (for consistent display)
 	cameraOrder []string
 
 	rtspUIStopped bool
+
+	// Recording state
+	isRecording    bool
+	recordTempFile string
+	recordCellW    int
+	recordCellH    int
+	recordCols     int
+	recordRows     int
 }
 
 func New() (*App, error) {
@@ -74,19 +87,16 @@ func New() (*App, error) {
 		return nil, err
 	}
 
-	// Auto-detect webcams and merge with config
-	detected := config.DetectWebcams()
-	cfg = mergeDetectedWebcams(cfg, detected)
+
 
 	multiMgr := stream.NewMultiManager(&cfg, cfgPath, logger)
-	recorder := stream.NewRecorder(logger)
+	postProc := stream.NewPostProcessor(logger)
 
 	// Initialize i18n
 	i18n.Init(cfg.Language)
 
-	a := app.NewWithID("com.syg.camera-helper")
-	w := a.NewWindow(i18n.T("title_settings"))
-	w.SetTitle("SYG Camera Helper") // We use hardcoded here, or translate it. Let's use hardcoded "SYG Camera Helper" for title.
+	a := app.NewWithID("com.syg.nystavision")
+	w := a.NewWindow(i18n.T("title_app"))
 	w.SetIcon(fyne.NewStaticResource("icon.png", iconData))
 
 	appObj := &App{
@@ -96,7 +106,7 @@ func New() (*App, error) {
 		cfgPath:      cfgPath,
 		logger:       logger,
 		multiManager: multiMgr,
-		recorder:     recorder,
+		postProc:     postProc,
 		cameraPanels: make(map[string]*ui.CameraPanel),
 		cameraOrder:  getCameraOrder(cfg.Cameras),
 	}
@@ -108,23 +118,7 @@ func New() (*App, error) {
 	return appObj, nil
 }
 
-// mergeDetectedWebcams adds newly detected webcams to the config if they don't exist yet.
-func mergeDetectedWebcams(cfg config.Config, detected []config.CameraSource) config.Config {
-	existingDevices := make(map[string]bool)
-	for _, c := range cfg.Cameras {
-		if c.Type == "webcam" && c.Device != "" {
-			existingDevices[c.Device] = true
-		}
-	}
 
-	for _, d := range detected {
-		if !existingDevices[d.Device] && len(cfg.Cameras) < config.MaxCameras {
-			d.ID = config.NextCameraID(cfg.Cameras)
-			cfg.Cameras = append(cfg.Cameras, d)
-		}
-	}
-	return cfg
-}
 
 func getCameraOrder(cameras []config.CameraSource) []string {
 	order := make([]string, len(cameras))
@@ -139,7 +133,7 @@ func (a *App) setupUI() {
 	a.window.SetCloseIntercept(a.handleClose)
 
 	// Status label
-	a.statusLabel = widget.NewLabelWithStyle("SYG Camera Helper", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
+	a.statusLabel = widget.NewLabelWithStyle(i18n.T("title_app"), fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
 
 	// Build toolbar
 	toolbar := a.buildToolbar()
@@ -163,7 +157,7 @@ func (a *App) setupUI() {
 
 func (a *App) buildToolbar() *fyne.Container {
 	// Add camera button
-	addBtn := widget.NewButtonWithIcon("", theme.ContentAddIcon(), func() {
+	a.addBtn = widget.NewButtonWithIcon("", theme.ContentAddIcon(), func() {
 		a.showAddCameraDialog()
 	})
 
@@ -177,6 +171,7 @@ func (a *App) buildToolbar() *fyne.Container {
 		a.toggleAllStreams()
 	})
 	a.startStopAllBtn.Importance = widget.SuccessImportance
+	a.startAllRef = a.startStopAllBtn
 
 	// Record button
 	a.recordBtn = widget.NewButtonWithIcon(i18n.T("btn_record"), theme.MediaRecordIcon(), func() {
@@ -187,6 +182,7 @@ func (a *App) buildToolbar() *fyne.Container {
 	settingsBtn := widget.NewButtonWithIcon("", theme.SettingsIcon(), func() {
 		a.showSettingsDialog()
 	})
+	a.settingsRef = settingsBtn
 
 	// Save layout button
 	saveLayoutBtn := widget.NewButtonWithIcon("", theme.DocumentSaveIcon(), func() {
@@ -198,10 +194,15 @@ func (a *App) buildToolbar() *fyne.Container {
 		a.showLoadLayoutDialog()
 	})
 
-	// Layout: [+][-] | [start/stop] | [record] | [settings][save][load]
-	leftGroup := container.NewHBox(addBtn, removeBtn)
+	// Help/Tutorial button
+	helpBtn := widget.NewButtonWithIcon("", theme.QuestionIcon(), func() {
+		a.showTutorial()
+	})
+
+	// Layout: [+][-] | [start/stop] | [record] | [settings][save][load] [?]
+	leftGroup := container.NewHBox(a.addBtn, removeBtn)
 	middleGroup := container.NewHBox(a.startStopAllBtn, widget.NewSeparator(), a.recordBtn)
-	rightGroup := container.NewHBox(widget.NewSeparator(), settingsBtn, saveLayoutBtn, loadLayoutBtn)
+	rightGroup := container.NewHBox(widget.NewSeparator(), settingsBtn, saveLayoutBtn, loadLayoutBtn, widget.NewSeparator(), helpBtn)
 
 	return container.NewHBox(leftGroup, middleGroup, rightGroup)
 }
@@ -332,7 +333,6 @@ func (a *App) handleSourceSelectionChanged(cameraID string, selectedVal string, 
 	if selectedVal == i18n.T("opt_passive") {
 		cam.Enabled = false
 	} else if selectedVal == i18n.T("opt_ip_camera") {
-		// Check if there is already an RTSP camera other than this one
 		hasOtherRTSP := false
 		for i, c := range a.cfg.Cameras {
 			if i != camIdx && c.Type == "rtsp" && c.Enabled {
@@ -360,7 +360,6 @@ func (a *App) handleSourceSelectionChanged(cameraID string, selectedVal string, 
 			cam.Type = "webcam"
 			cam.Device = dev
 
-			// Disable other cameras using this device to prevent conflicts
 			for i := range a.cfg.Cameras {
 				if i != camIdx && a.cfg.Cameras[i].Enabled && a.cfg.Cameras[i].Type == "webcam" && a.cfg.Cameras[i].Device == dev {
 					a.cfg.Cameras[i].Enabled = false
@@ -376,7 +375,6 @@ func (a *App) handleSourceSelectionChanged(cameraID string, selectedVal string, 
 	_ = config.Save(*a.cfg, a.cfgPath)
 	a.mu.Unlock()
 
-	// Stop other streams that were disabled
 	for _, id := range camerasToStop {
 		a.multiManager.StopCamera(id)
 	}
@@ -399,7 +397,7 @@ func (a *App) showEditCameraDialog(cameraID string) {
 		return
 	}
 
-	progress := dialog.NewCustom("Kameralar Aranıyor", "Lütfen bekleyin...", widget.NewProgressBarInfinite(), a.window)
+	progress := dialog.NewCustom(i18n.T("msg_cameras_searching"), i18n.T("msg_please_wait"), widget.NewProgressBarInfinite(), a.window)
 	progress.Show()
 
 	go func() {
@@ -453,45 +451,45 @@ func (a *App) showEditCameraDialog(cameraID string) {
 				webcamSelect.Show()
 			}
 
-	typeSelect.OnChanged = func(s string) {
-		if s == "rtsp" {
-			urlEntry.Show()
-			webcamSelect.Hide()
-		} else {
-			urlEntry.Hide()
-			webcamSelect.Show()
-		}
-	}
+			typeSelect.OnChanged = func(s string) {
+				if s == "rtsp" {
+					urlEntry.Show()
+					webcamSelect.Hide()
+				} else {
+					urlEntry.Hide()
+					webcamSelect.Show()
+				}
+			}
 
-	form := dialog.NewForm(fmt.Sprintf("%s - %s", i18n.T("menu_edit"), selectedCam.Name), i18n.T("btn_save"), i18n.T("btn_cancel"), []*widget.FormItem{
-		widget.NewFormItem(i18n.T("lbl_camera_name"), nameEntry),
-		widget.NewFormItem(i18n.T("lbl_type"), typeSelect),
-		widget.NewFormItem(i18n.T("lbl_ip_url"), urlEntry),
-		widget.NewFormItem(i18n.T("lbl_webcam"), webcamSelect),
-	}, func(ok bool) {
-		defer a.refreshCameraDropdowns()
-		if !ok {
-			return
-		}
+			form := dialog.NewForm(fmt.Sprintf("%s - %s", i18n.T("menu_edit"), selectedCam.Name), i18n.T("btn_save"), i18n.T("btn_cancel"), []*widget.FormItem{
+				widget.NewFormItem(i18n.T("lbl_camera_name"), nameEntry),
+				widget.NewFormItem(i18n.T("lbl_type"), typeSelect),
+				widget.NewFormItem(i18n.T("lbl_ip_url"), urlEntry),
+				widget.NewFormItem(i18n.T("lbl_webcam"), webcamSelect),
+			}, func(ok bool) {
+				defer a.refreshCameraDropdowns()
+				if !ok {
+					return
+				}
 
-		a.mu.Lock()
-		defer a.mu.Unlock()
+				a.mu.Lock()
+				defer a.mu.Unlock()
 
-		camPtr := &a.cfg.Cameras[selectedIdx]
-		camPtr.Name = nameEntry.Text
-		camPtr.Type = typeSelect.Selected
-		camPtr.RTSPURL = strings.TrimSpace(urlEntry.Text)
-		if camPtr.Type == "webcam" {
-			camPtr.Device = wcDevMap[webcamSelect.Selected]
-		}
-		_ = config.Save(*a.cfg, a.cfgPath)
-		a.multiManager.UpdateCamera(*camPtr)
-		if panel, exists := a.cameraPanels[cameraID]; exists {
-			panel.SetName(camPtr.Name)
-		}
-	}, a.window)
-	form.Resize(fyne.NewSize(450, 400))
-	form.Show()
+				camPtr := &a.cfg.Cameras[selectedIdx]
+				camPtr.Name = nameEntry.Text
+				camPtr.Type = typeSelect.Selected
+				camPtr.RTSPURL = strings.TrimSpace(urlEntry.Text)
+				if camPtr.Type == "webcam" {
+					camPtr.Device = wcDevMap[webcamSelect.Selected]
+				}
+				_ = config.Save(*a.cfg, a.cfgPath)
+				a.multiManager.UpdateCamera(*camPtr)
+				if panel, exists := a.cameraPanels[cameraID]; exists {
+					panel.SetName(camPtr.Name)
+				}
+			}, a.window)
+			form.Resize(fyne.NewSize(450, 400))
+			form.Show()
 		})
 	}()
 }
@@ -499,7 +497,6 @@ func (a *App) showEditCameraDialog(cameraID string) {
 func (a *App) buildCameraGrid() {
 	cols, _ := ui.CalculateGrid(len(a.cfg.Cameras))
 
-	// Create camera panels
 	a.cameraPanels = make(map[string]*ui.CameraPanel)
 	objects := make([]fyne.CanvasObject, 0, len(a.cfg.Cameras))
 
@@ -516,7 +513,6 @@ func (a *App) buildCameraGrid() {
 	a.cameraGrid = container.NewGridWithColumns(cols, objects...)
 	a.gridContainer = container.NewStack(a.cameraGrid)
 
-	// Select first camera by default
 	if len(a.cameraOrder) > 0 && a.selectedCamera == "" {
 		a.selectedCamera = a.cameraOrder[0]
 	}
@@ -580,11 +576,11 @@ func (a *App) selectCamera(cameraID string) {
 
 func (a *App) showAddCameraDialog() {
 	if len(a.cfg.Cameras) >= config.MaxCameras {
-		dialog.ShowInformation("Limit", fmt.Sprintf("Maksimum %d kamera eklenebilir.", config.MaxCameras), a.window)
+		dialog.ShowInformation(i18n.T("err_limit"), fmt.Sprintf(i18n.T("err_camera_limit"), config.MaxCameras), a.window)
 		return
 	}
 
-	progress := dialog.NewCustom("Kameralar Aranıyor", "Lütfen bekleyin...", widget.NewProgressBarInfinite(), a.window)
+	progress := dialog.NewCustom(i18n.T("msg_cameras_searching"), i18n.T("msg_please_wait"), widget.NewProgressBarInfinite(), a.window)
 	progress.Show()
 
 	go func() {
@@ -627,69 +623,68 @@ func (a *App) showAddCameraDialog() {
 				}
 			}
 
-	formItems := []*widget.FormItem{
-		widget.NewFormItem(i18n.T("lbl_name"), nameEntry),
-		widget.NewFormItem(i18n.T("lbl_source"), sourceType),
-		widget.NewFormItem(i18n.T("lbl_ip_url"), urlEntry),
-		widget.NewFormItem(i18n.T("lbl_webcam"), webcamSelect),
-	}
+			formItems := []*widget.FormItem{
+				widget.NewFormItem(i18n.T("lbl_name"), nameEntry),
+				widget.NewFormItem(i18n.T("lbl_source"), sourceType),
+				widget.NewFormItem(i18n.T("lbl_ip_url"), urlEntry),
+				widget.NewFormItem(i18n.T("lbl_webcam"), webcamSelect),
+			}
 
-	d := dialog.NewForm(i18n.T("title_add_camera"), i18n.T("btn_add_camera"), i18n.T("btn_cancel"), formItems, func(ok bool) {
-		if !ok {
-			return
-		}
-
-		if sourceType.Selected == "IP" {
-			// Check if there is already an RTSP camera
-			hasRTSP := false
-			for _, c := range a.cfg.Cameras {
-				if c.Type == "rtsp" && c.Enabled {
-					hasRTSP = true
-					break
+			d := dialog.NewForm(i18n.T("title_add_camera"), i18n.T("btn_add_camera"), i18n.T("btn_cancel"), formItems, func(ok bool) {
+				if !ok {
+					return
 				}
-			}
-			if hasRTSP {
-				dialog.ShowError(fmt.Errorf("%s", i18n.T("msg_max_ip_camera")), a.window)
-				return
-			}
-		}
 
-		cam := config.CameraSource{
-			ID:      config.NextCameraID(a.cfg.Cameras),
-			Name:    nameEntry.Text,
-			Width:   1280,
-			Height:  720,
-			FPS:     30,
-			Enabled: true,
-		}
+				if sourceType.Selected == "IP" {
+					hasRTSP := false
+					for _, c := range a.cfg.Cameras {
+						if c.Type == "rtsp" && c.Enabled {
+							hasRTSP = true
+							break
+						}
+					}
+					if hasRTSP {
+						dialog.ShowError(fmt.Errorf("%s", i18n.T("msg_max_ip_camera")), a.window)
+						return
+					}
+				}
 
-		if sourceType.Selected == "IP" {
-			cam.Type = "rtsp"
-			cam.RTSPURL = strings.TrimSpace(urlEntry.Text)
-		} else {
-			cam.Type = "webcam"
-			cam.Device = wcDevMap[webcamSelect.Selected]
-		}
+				cam := config.CameraSource{
+					ID:      config.NextCameraID(a.cfg.Cameras),
+					Name:    nameEntry.Text,
+					Width:   1280,
+					Height:  720,
+					FPS:     30,
+					Enabled: true,
+				}
 
-		prevServerCam := a.cfg.RTSPServerCamera
-		if err := a.multiManager.AddCamera(cam); err != nil {
-			dialog.ShowError(err, a.window)
-			return
-		}
+				if sourceType.Selected == "IP" {
+					cam.Type = "rtsp"
+					cam.RTSPURL = strings.TrimSpace(urlEntry.Text)
+				} else {
+					cam.Type = "webcam"
+					cam.Device = wcDevMap[webcamSelect.Selected]
+				}
 
-		if prevServerCam != a.cfg.RTSPServerCamera {
-			a.multiManager.Close()
-			a.multiManager = stream.NewMultiManager(a.cfg, a.cfgPath, a.logger)
-			if a.cfg.AutoStart {
-				a.multiManager.StartAll()
-			}
-		}
+				prevServerCam := a.cfg.RTSPServerCamera
+				if err := a.multiManager.AddCamera(cam); err != nil {
+					dialog.ShowError(err, a.window)
+					return
+				}
 
-		a.rebuildGrid()
-	}, a.window)
+				if prevServerCam != a.cfg.RTSPServerCamera {
+					a.multiManager.Close()
+					a.multiManager = stream.NewMultiManager(a.cfg, a.cfgPath, a.logger)
+					if a.cfg.AutoStart {
+						a.multiManager.StartAll()
+					}
+				}
 
-	d.Resize(fyne.NewSize(450, 300))
-	d.Show()
+				a.rebuildGrid()
+			}, a.window)
+
+			d.Resize(fyne.NewSize(450, 300))
+			d.Show()
 		})
 	}()
 }
@@ -742,10 +737,10 @@ func (a *App) removeSelectedCamera() {
 	}, a.window)
 }
 
-// --- Recording ---
+// --- Recording (Composite → Crop) ---
 
 func (a *App) toggleRecording() {
-	if a.recorder.IsRecording() {
+	if a.isRecording {
 		a.stopRecording()
 	} else {
 		a.startRecording()
@@ -753,24 +748,43 @@ func (a *App) toggleRecording() {
 }
 
 func (a *App) startRecording() {
+	a.mu.Lock()
+	if a.isRecording {
+		a.mu.Unlock()
+		return
+	}
+
 	cols, rows := ui.CalculateGrid(len(a.cfg.Cameras))
-	gridW := cols * 640
-	gridH := rows * 480
+	cellW, cellH := 1280, 720
+	gridW := cols * cellW
+	gridH := rows * cellH
 	fps := 15
 
-	if err := a.recorder.Start(gridW, gridH, fps); err != nil {
+	a.recordCols = cols
+	a.recordRows = rows
+	a.recordCellW = cellW
+	a.recordCellH = cellH
+	a.mu.Unlock()
+
+	// Find/resolve recorder
+	rec := stream.NewRecorder(a.logger)
+	if err := rec.Start(gridW, gridH, fps); err != nil {
 		dialog.ShowError(err, a.window)
 		return
 	}
 
-	a.recordStart = time.Now()
-	a.recordBtn.SetText("Durdur")
-	a.recordBtn.Icon = theme.MediaStopIcon()
-	a.recordBtn.Importance = widget.DangerImportance
-	a.recordBtn.Refresh()
+	a.mu.Lock()
+	a.isRecording = true
+	// Store recorder in a closure-captured variable
+	a.mu.Unlock()
 
-	// Start recording frame composition loop
-	go a.recordLoop()
+	a.recordStart = time.Now()
+	fyne.Do(func() {
+		a.recordBtn.SetText(i18n.T("btn_stop"))
+		a.recordBtn.Icon = theme.MediaStopIcon()
+		a.recordBtn.Importance = widget.DangerImportance
+		a.recordBtn.Refresh()
+	})
 
 	// Start timer display
 	a.recordTimer = time.NewTicker(time.Second)
@@ -778,27 +792,38 @@ func (a *App) startRecording() {
 		for range a.recordTimer.C {
 			elapsed := time.Since(a.recordStart).Truncate(time.Second)
 			fyne.Do(func() {
-				a.recordBtn.SetText(fmt.Sprintf("Durdur (%s)", elapsed))
+				a.recordBtn.SetText(i18n.T("btn_stop_with_time", elapsed))
 				a.recordBtn.Refresh()
 			})
 		}
 	}()
+
+	// Start composite record loop
+	go a.compositeRecordLoop(rec, cols, rows, gridW, gridH)
 }
 
-func (a *App) recordLoop() {
-	cols, rows := ui.CalculateGrid(len(a.cfg.Cameras))
-	gridW := cols * 640
-	gridH := rows * 480
-
+func (a *App) compositeRecordLoop(rec *stream.Recorder, cols, rows, gridW, gridH int) {
 	ticker := time.NewTicker(time.Second / 15) // 15 FPS
 	defer ticker.Stop()
 
 	for range ticker.C {
-		if !a.recorder.IsRecording() {
+		a.mu.Lock()
+		recording := a.isRecording
+		a.mu.Unlock()
+
+		if !recording {
+			// Stop the recorder and save the temp file path
+			tempFile, err := rec.Stop()
+			if err != nil {
+				a.logger.Printf("[recording] stop error: %v", err)
+				return
+			}
+			a.mu.Lock()
+			a.recordTempFile = tempFile
+			a.mu.Unlock()
 			return
 		}
 
-		// Collect frames from all camera panels
 		frames := make(map[string]*image.RGBA)
 		for id, panel := range a.cameraPanels {
 			if frame := panel.GetLastFrame(); frame != nil {
@@ -807,97 +832,197 @@ func (a *App) recordLoop() {
 		}
 
 		composite := stream.ComposeGridFrame(frames, a.cameraOrder, cols, rows, gridW, gridH)
-		a.recorder.WriteFrame(composite)
+		rec.WriteFrame(composite)
 	}
 }
 
 func (a *App) stopRecording() {
-	a.stopRecordingWithCallback(nil)
-}
+	a.mu.Lock()
+	if !a.isRecording {
+		a.mu.Unlock()
+		return
+	}
+	a.isRecording = false
+	a.mu.Unlock()
 
-func (a *App) stopRecordingWithCallback(onDone func()) {
 	if a.recordTimer != nil {
 		a.recordTimer.Stop()
 		a.recordTimer = nil
 	}
 
-	if !a.recorder.IsRecording() {
-		if onDone != nil {
-			onDone()
-		}
-		return
-	}
-
-	tempFile, err := a.recorder.Stop()
-	if err != nil {
-		dialog.ShowError(err, a.window)
+	fyne.Do(func() {
 		a.recordBtn.SetText(i18n.T("btn_record"))
 		a.recordBtn.Icon = theme.MediaRecordIcon()
 		a.recordBtn.Importance = widget.MediumImportance
 		a.recordBtn.Refresh()
-		if onDone != nil {
-			onDone()
+	})
+
+	// Wait briefly for compositeRecordLoop to stop and set recordTempFile
+	go func() {
+		// Give the record loop time to write the final file
+		time.Sleep(500 * time.Millisecond)
+
+		a.mu.Lock()
+		tempFile := a.recordTempFile
+		cols := a.recordCols
+		rows := a.recordRows
+		cellW := a.recordCellW
+		cellH := a.recordCellH
+		cameras := make([]config.CameraSource, len(a.cfg.Cameras))
+		copy(cameras, a.cfg.Cameras)
+		cameraOrder := make([]string, len(a.cameraOrder))
+		copy(cameraOrder, a.cameraOrder)
+		a.mu.Unlock()
+
+		if tempFile == "" {
+			a.logger.Printf("[recording] temp file not available yet, waiting...")
+			time.Sleep(2 * time.Second)
+			a.mu.Lock()
+			tempFile = a.recordTempFile
+			a.mu.Unlock()
 		}
-		return
+
+		if tempFile == "" {
+			fyne.Do(func() {
+				dialog.ShowError(fmt.Errorf("recording file not available"), a.window)
+			})
+			return
+		}
+
+		// Build segments for each camera
+		segments := buildCameraSegments(cameras, cameraOrder, cols, rows, cellW, cellH)
+
+		// Show patient name dialog
+		fyne.Do(func() {
+			a.showPatientNameDialog(tempFile, segments)
+		})
+	}()
+}
+
+// buildCameraSegments calculates crop coordinates for each camera in the grid.
+func buildCameraSegments(cameras []config.CameraSource, order []string, cols, rows, cellW, cellH int) []stream.CameraSegment {
+	// Build name lookup
+	nameMap := make(map[string]string)
+	for _, cam := range cameras {
+		nameMap[cam.ID] = cam.Name
 	}
 
-	a.recordBtn.SetText(i18n.T("btn_record"))
-	a.recordBtn.Icon = theme.MediaRecordIcon()
-	a.recordBtn.Importance = widget.MediumImportance
-	a.recordBtn.Refresh()
-
-	// Show file save dialog
-	saveDialog := dialog.NewFileSave(func(writer fyne.URIWriteCloser, err error) {
-		if err != nil {
-			dialog.ShowError(err, a.window)
-			if onDone != nil {
-				onDone()
-			}
-			return
+	var segments []stream.CameraSegment
+	for idx, camID := range order {
+		if idx >= cols*rows {
+			break
 		}
-		if writer == nil {
-			// User cancelled
-			_ = os.Remove(tempFile) // Clean up temp file
-			if onDone != nil {
-				onDone()
-			}
-			return
-		}
-		defer writer.Close()
-
-		// Copy temp file to selected location
-		src, err := os.Open(tempFile)
-		if err != nil {
-			dialog.ShowError(err, a.window)
-			if onDone != nil {
-				onDone()
-			}
-			return
-		}
-		defer src.Close()
-
-		if _, err := io.Copy(writer, src); err != nil {
-			dialog.ShowError(err, a.window)
-			if onDone != nil {
-				onDone()
-			}
-			return
-		}
-
-		// Clean up temp file
-		_ = os.Remove(tempFile)
-
-		infoDialog := dialog.NewInformation("Kayıt Tamamlandı", "Video başarıyla kaydedildi.", a.window)
-		infoDialog.SetOnClosed(func() {
-			if onDone != nil {
-				onDone()
-			}
+		col := idx % cols
+		row := idx / cols
+		segments = append(segments, stream.CameraSegment{
+			ID:   camID,
+			Name: nameMap[camID],
+			X:    col * cellW,
+			Y:    row * cellH,
+			W:    cellW,
+			H:    cellH,
 		})
-		infoDialog.Show()
-	}, a.window)
+	}
+	return segments
+}
 
-	saveDialog.SetFileName(fmt.Sprintf("kayit_%s.mp4", time.Now().Format("20060102_150405")))
-	saveDialog.Show()
+func (a *App) showPatientNameDialog(tempFile string, segments []stream.CameraSegment) {
+	nameEntry := widget.NewEntry()
+	nameEntry.SetPlaceHolder(i18n.T("record_patient_placeholder"))
+
+	dlg := dialog.NewForm(
+		i18n.T("record_patient_title"),
+		i18n.T("record_patient_btn"),
+		i18n.T("btn_cancel"),
+		[]*widget.FormItem{
+			widget.NewFormItem(i18n.T("record_patient_label"), nameEntry),
+		},
+		func(ok bool) {
+			if !ok {
+				// User cancelled — clean up temp file
+				_ = os.Remove(tempFile)
+				return
+			}
+			patientName := strings.TrimSpace(nameEntry.Text)
+			outDir := stream.GetOutputDir(a.cfg.RecordingsDir, patientName)
+
+			if err := os.MkdirAll(outDir, 0o755); err != nil {
+				dialog.ShowError(fmt.Errorf("failed to create output directory: %w", err), a.window)
+				_ = os.Remove(tempFile)
+				return
+			}
+
+			// Show progress dialog while processing
+			progressBar := widget.NewProgressBarInfinite()
+			progressLabel := widget.NewLabel(i18n.T("record_processing"))
+			progressContent := container.NewVBox(progressLabel, progressBar)
+			progressDlg := dialog.NewCustomWithoutButtons(
+				i18n.T("record_processing"),
+				progressContent,
+				a.window,
+			)
+			progressDlg.Show()
+
+			go func() {
+				ctx := context.Background()
+				progressCh := make(chan float64, 10)
+
+				var result stream.ProcessResult
+				done := make(chan struct{})
+
+				go func() {
+					result = a.postProc.Process(ctx, tempFile, segments, outDir, progressCh)
+					close(done)
+				}()
+
+				// Drain progress channel
+				go func() {
+					for range progressCh {
+					}
+				}()
+
+				<-done
+
+				// Clean up temp file
+				_ = os.Remove(tempFile)
+
+				fyne.Do(func() {
+					progressDlg.Hide()
+
+					if result.Err != nil {
+						dialog.ShowError(result.Err, a.window)
+						return
+					}
+
+					// Show success dialog with Open Folder option
+					msg := i18n.T("record_done_msg", result.OutputDir)
+					openBtn := widget.NewButtonWithIcon(i18n.T("record_done_open"), theme.FolderOpenIcon(), func() {
+						openPath(result.OutputDir)
+					})
+					openBtn.Importance = widget.HighImportance
+					closeBtn := widget.NewButton(i18n.T("record_done_close"), nil)
+
+					content := container.NewVBox(
+						widget.NewLabel(msg),
+						container.NewHBox(layout.NewSpacer(), openBtn, closeBtn),
+					)
+
+					successDlg := dialog.NewCustomWithoutButtons(
+						i18n.T("record_done_title"),
+						content,
+						a.window,
+					)
+					closeBtn.OnTapped = func() {
+						successDlg.Hide()
+					}
+					successDlg.Show()
+				})
+			}()
+		},
+		a.window,
+	)
+	dlg.Resize(fyne.NewSize(400, 160))
+	dlg.Show()
 }
 
 // --- Settings Dialog ---
@@ -908,8 +1033,8 @@ func (a *App) showSettingsDialog() {
 
 	langOptions := []string{"🇹🇷 Türkçe", "🇬🇧 English", "🇸🇦 العربية"}
 	langMap := map[string]string{
-		"🇹🇷 Türkçe":   "tr",
-		"🇬🇧 English":  "en",
+		"🇹🇷 Türkçe":  "tr",
+		"🇬🇧 English": "en",
 		"🇸🇦 العربية": "ar",
 	}
 	reverseLangMap := map[string]string{
@@ -922,11 +1047,11 @@ func (a *App) showSettingsDialog() {
 	if sel, ok := reverseLangMap[a.cfg.Language]; ok {
 		langSelect.SetSelected(sel)
 	} else {
-		langSelect.SetSelected("🇹🇷 Türkçe")
+		langSelect.SetSelected("🇬🇧 English")
 	}
 
 	langSelect.OnChanged = func(sel string) {
-		newLang := "tr"
+		newLang := "en"
 		if code, ok := langMap[sel]; ok {
 			newLang = code
 		}
@@ -935,7 +1060,6 @@ func (a *App) showSettingsDialog() {
 			return
 		}
 
-		// Temporarily set language for the popup
 		i18n.Init(newLang)
 		dialog.ShowConfirm(i18n.T("title_lang_restart"), i18n.T("msg_lang_restart"), func(ok bool) {
 			if ok {
@@ -944,14 +1068,12 @@ func (a *App) showSettingsDialog() {
 				_ = config.Save(*a.cfg, a.cfgPath)
 				a.mu.Unlock()
 
-				// Serbest bırakılmazsa yeni açılan process portlara bind olamaz ve çöker
 				if a.multiManager != nil {
 					a.multiManager.Close()
 				}
 
 				restartApp()
 			} else {
-				// Revert selection
 				i18n.Init(a.cfg.Language)
 				if oldSel, ok := reverseLangMap[a.cfg.Language]; ok {
 					langSelect.SetSelected(oldSel)
@@ -960,7 +1082,6 @@ func (a *App) showSettingsDialog() {
 		}, a.window)
 	}
 
-	// Open config / logs buttons
 	configBtn := widget.NewButtonWithIcon(i18n.T("btn_open_config"), theme.SettingsIcon(), func() {
 		openPath(a.cfgPath)
 	})
@@ -975,9 +1096,25 @@ func (a *App) showSettingsDialog() {
 	versionText.TextSize = theme.CaptionTextSize()
 	versionText.Alignment = fyne.TextAlignTrailing
 
+	recordingsDirEntry := widget.NewEntry()
+	recordingsDirEntry.SetText(a.cfg.RecordingsDir)
+	recordingsDirEntry.Disable() // Disable direct manual typing to avoid typos, force using browser
+
+	browseBtn := widget.NewButtonWithIcon("", theme.FolderOpenIcon(), func() {
+		dialog.ShowFolderOpen(func(uri fyne.ListableURI, err error) {
+			if err != nil || uri == nil {
+				return
+			}
+			recordingsDirEntry.SetText(uri.Path())
+		}, a.window)
+	})
+
+	recordingsRow := container.NewBorder(nil, nil, widget.NewLabel(i18n.T("lbl_recordings_dir")+": "), browseBtn, recordingsDirEntry)
+
 	settingsContent := container.NewVBox(
 		widget.NewLabelWithStyle(i18n.T("title_general_settings"), fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
 		container.NewBorder(nil, nil, widget.NewLabel(i18n.T("lbl_language")+": "), nil, langSelect),
+		recordingsRow,
 		autostartCheck,
 		widget.NewSeparator(),
 		container.NewGridWithColumns(2, configBtn, logsBtn),
@@ -985,13 +1122,12 @@ func (a *App) showSettingsDialog() {
 	)
 
 	d := dialog.NewCustom(i18n.T("title_settings"), i18n.T("btn_save_close"), settingsContent, a.window)
-	d.Resize(fyne.NewSize(450, 200))
+	d.Resize(fyne.NewSize(500, 260))
 
 	d.SetOnClosed(func() {
 		a.mu.Lock()
-		
 		a.cfg.AutoStart = autostartCheck.Checked
-
+		a.cfg.RecordingsDir = recordingsDirEntry.Text
 		_ = config.Save(*a.cfg, a.cfgPath)
 		a.mu.Unlock()
 
@@ -1009,50 +1145,49 @@ func (a *App) showSettingsDialog() {
 
 func (a *App) showSaveLayoutDialog() {
 	nameEntry := widget.NewEntry()
-	nameEntry.SetPlaceHolder("Layout ismi girin...")
+	nameEntry.SetPlaceHolder(i18n.T("layout_name_placeholder"))
 
-	dialog.ShowForm("Layout Kaydet", "Kaydet", "İptal", []*widget.FormItem{
-		widget.NewFormItem("İsim", nameEntry),
+	dialog.ShowForm(i18n.T("layout_save_title"), i18n.T("layout_save_btn"), i18n.T("btn_cancel"), []*widget.FormItem{
+		widget.NewFormItem(i18n.T("layout_name_lbl"), nameEntry),
 	}, func(ok bool) {
 		if !ok || strings.TrimSpace(nameEntry.Text) == "" {
 			return
 		}
 
-		layout := config.SavedLayout{
+		savedLayout := config.SavedLayout{
 			Name:    nameEntry.Text,
 			Cameras: make([]config.CameraSource, len(a.cfg.Cameras)),
 		}
-		copy(layout.Cameras, a.cfg.Cameras)
+		copy(savedLayout.Cameras, a.cfg.Cameras)
 
-		// Replace existing layout with same name, or append
 		found := false
 		for i, l := range a.cfg.SavedLayouts {
 			if l.Name == nameEntry.Text {
-				a.cfg.SavedLayouts[i] = layout
+				a.cfg.SavedLayouts[i] = savedLayout
 				found = true
 				break
 			}
 		}
 		if !found {
-			a.cfg.SavedLayouts = append(a.cfg.SavedLayouts, layout)
+			a.cfg.SavedLayouts = append(a.cfg.SavedLayouts, savedLayout)
 		}
 
 		a.cfg.ActiveLayoutName = nameEntry.Text
 		_ = config.Save(*a.cfg, a.cfgPath)
 
-		dialog.ShowInformation("Başarılı", fmt.Sprintf("Layout %q kaydedildi.", nameEntry.Text), a.window)
+		dialog.ShowInformation(i18n.T("layout_saved_title"), fmt.Sprintf(i18n.T("layout_saved"), nameEntry.Text), a.window)
 	}, a.window)
 }
 
 func (a *App) showLoadLayoutDialog() {
 	if len(a.cfg.SavedLayouts) == 0 {
-		dialog.ShowInformation("Boş", "Kaydedilmiş layout bulunamadı.", a.window)
+		dialog.ShowInformation(i18n.T("layout_empty_title"), i18n.T("layout_empty"), a.window)
 		return
 	}
 
 	layoutNames := make([]string, len(a.cfg.SavedLayouts))
 	for i, l := range a.cfg.SavedLayouts {
-		layoutNames[i] = fmt.Sprintf("%s (%d kamera)", l.Name, len(l.Cameras))
+		layoutNames[i] = fmt.Sprintf(i18n.T("layout_cameras"), l.Name, len(l.Cameras))
 	}
 
 	layoutSelect := widget.NewSelect(layoutNames, nil)
@@ -1060,14 +1195,13 @@ func (a *App) showLoadLayoutDialog() {
 		layoutSelect.SetSelected(layoutNames[0])
 	}
 
-	dialog.ShowForm("Layout Yükle", "Yükle", "İptal", []*widget.FormItem{
-		widget.NewFormItem("Layout", layoutSelect),
+	dialog.ShowForm(i18n.T("layout_load_title"), i18n.T("layout_load_btn"), i18n.T("btn_cancel"), []*widget.FormItem{
+		widget.NewFormItem(i18n.T("layout_select_lbl"), layoutSelect),
 	}, func(ok bool) {
 		if !ok {
 			return
 		}
 
-		// Find the selected layout
 		idx := -1
 		for i, name := range layoutNames {
 			if name == layoutSelect.Selected {
@@ -1079,49 +1213,64 @@ func (a *App) showLoadLayoutDialog() {
 			return
 		}
 
-		layout := a.cfg.SavedLayouts[idx]
+		loadedLayout := a.cfg.SavedLayouts[idx]
 
-		// Stop all current streams
 		a.multiManager.Close()
 
-		// Apply the layout
 		a.mu.Lock()
-		a.cfg.Cameras = make([]config.CameraSource, len(layout.Cameras))
-		copy(a.cfg.Cameras, layout.Cameras)
-		a.cfg.ActiveLayoutName = layout.Name
+		a.cfg.Cameras = make([]config.CameraSource, len(loadedLayout.Cameras))
+		copy(a.cfg.Cameras, loadedLayout.Cameras)
+		a.cfg.ActiveLayoutName = loadedLayout.Name
 		_ = config.Save(*a.cfg, a.cfgPath)
 		a.mu.Unlock()
 
-		// Rebuild everything
 		a.multiManager = stream.NewMultiManager(a.cfg, a.cfgPath, a.logger)
 		a.rebuildGrid()
 
-		// Start all
 		if a.cfg.AutoStart {
 			a.multiManager.StartAll()
 		}
 	}, a.window)
 }
 
+// --- Tutorial ---
+
+func (a *App) showTutorial() {
+	steps := []ui.TutorialStep{
+		{TargetWidget: nil, TitleKey: "tutorial_title_0", DescKey: "tutorial_desc_0"},
+		{TargetWidget: a.addBtn, TitleKey: "tutorial_title_1", DescKey: "tutorial_desc_1"},
+		{TargetWidget: a.startAllRef, TitleKey: "tutorial_title_2", DescKey: "tutorial_desc_2"},
+		{TargetWidget: a.recordBtn, TitleKey: "tutorial_title_3", DescKey: "tutorial_desc_3"},
+		{TargetWidget: a.settingsRef, TitleKey: "tutorial_title_4", DescKey: "tutorial_desc_4"},
+	}
+
+	ui.ShowTutorial(a.window, steps, func() {
+		a.mu.Lock()
+		a.cfg.TutorialShown = true
+		_ = config.Save(*a.cfg, a.cfgPath)
+		a.mu.Unlock()
+	})
+}
+
 // --- Tray ---
 
 func (a *App) setupTray() {
 	if desk, ok := a.fyneApp.(desktop.App); ok {
-		m := fyne.NewMenu("SYG Camera Helper",
-			fyne.NewMenuItem("Göster", func() {
+		m := fyne.NewMenu(i18n.T("title_app"),
+			fyne.NewMenuItem(i18n.T("tray_show"), func() {
 				a.window.Show()
 			}),
 			fyne.NewMenuItemSeparator(),
-			fyne.NewMenuItem("Tüm Kameraları Başlat", func() {
+			fyne.NewMenuItem(i18n.T("tray_start_all"), func() {
 				a.rtspUIStopped = false
 				a.multiManager.StartAll()
 			}),
-			fyne.NewMenuItem("Tüm Kameraları Durdur", func() {
+			fyne.NewMenuItem(i18n.T("tray_stop_all"), func() {
 				a.rtspUIStopped = true
 				a.multiManager.StopAll()
 			}),
 			fyne.NewMenuItemSeparator(),
-			fyne.NewMenuItem("Çıkış", func() {
+			fyne.NewMenuItem(i18n.T("tray_quit"), func() {
 				a.Quit()
 			}),
 		)
@@ -1131,15 +1280,17 @@ func (a *App) setupTray() {
 }
 
 func (a *App) minimizeToBackground() {
-	// Stop streaming/playback
 	a.rtspUIStopped = true
 	a.multiManager.StopAll()
 	a.updateStartStopAllBtn(false)
 
-	// If recording, stop and show save dialog, then hide window
-	if a.recorder.IsRecording() {
-		a.stopRecordingWithCallback(func() {
-			a.window.Hide()
+	if a.isRecording {
+		a.stopRecording()
+		// Give a moment for post-processing dialog to appear before hiding
+		time.AfterFunc(300*time.Millisecond, func() {
+			fyne.Do(func() {
+				a.window.Hide()
+			})
 		})
 	} else {
 		a.window.Hide()
@@ -1147,29 +1298,55 @@ func (a *App) minimizeToBackground() {
 }
 
 func (a *App) handleClose() {
-	dialog.ShowCustomConfirm("Çıkış", "Çıkış Yap", "Tray'e Küçült",
-		widget.NewLabel("Uygulamayı tamamen kapatmak mı yoksa system tray'de çalışmaya devam ettirmek mi istiyorsunuz?"),
-		func(quit bool) {
-			if quit {
-				a.Quit()
-			} else {
-				a.minimizeToBackground()
-			}
-		}, a.window)
+	bgBtn := widget.NewButtonWithIcon(i18n.T("close_btn_background"), theme.ComputerIcon(), nil)
+	bgBtn.Importance = widget.HighImportance
+	quitBtn := widget.NewButtonWithIcon(i18n.T("close_btn_quit"), theme.CancelIcon(), nil)
+
+	content := container.NewVBox(
+		widget.NewLabel(i18n.T("close_message")),
+		widget.NewSeparator(),
+		container.NewHBox(layout.NewSpacer(), bgBtn, quitBtn),
+	)
+
+	var dlg *dialog.CustomDialog
+	dlg = dialog.NewCustomWithoutButtons(i18n.T("close_title"), content, a.window)
+
+	bgBtn.OnTapped = func() {
+		dlg.Hide()
+		a.minimizeToBackground()
+	}
+	quitBtn.OnTapped = func() {
+		dlg.Hide()
+		a.Quit()
+	}
+
+	dlg.Show()
 }
 
 func (a *App) Run() error {
 	if a.cfg.AutoStart {
 		a.multiManager.StartAll()
 	}
+
+	// Show tutorial on first run
+	if !a.cfg.TutorialShown {
+		// Slight delay so the window renders first
+		time.AfterFunc(500*time.Millisecond, func() {
+			fyne.Do(func() {
+				a.showTutorial()
+			})
+		})
+	}
+
 	a.window.ShowAndRun()
 	return nil
 }
 
 func (a *App) Quit() {
-	if a.recorder.IsRecording() {
-		a.recorder.Stop()
-	}
+	a.mu.Lock()
+	a.isRecording = false
+	a.mu.Unlock()
+
 	a.multiManager.Close()
 	_ = a.logger.Close()
 	a.fyneApp.Quit()
@@ -1190,7 +1367,6 @@ func (a *App) statusLoop() {
 			panel.SetStatus(running, state.LastError != "")
 		}
 
-		// Count running cameras (total and webcams separately)
 		runningWebcams := 0
 		runningTotal := 0
 		total := len(a.cfg.Cameras)
@@ -1208,17 +1384,19 @@ func (a *App) statusLoop() {
 			}
 		}
 
-		recText := ""
-		if a.recorder.IsRecording() {
-			recText = " | 🔴 Kayıt"
-		}
+		a.mu.Lock()
+		recording := a.isRecording
+		a.mu.Unlock()
 
-		// Update global start/stop button status based on actual webcam state
 		anyWebcamRunning := runningWebcams > 0
 		a.updateStartStopAllBtn(anyWebcamRunning)
 
 		fyne.Do(func() {
-			a.statusLabel.SetText(fmt.Sprintf("SYG Camera Helper — %d/%d aktif%s", runningTotal, total, recText))
+			if recording {
+				a.statusLabel.SetText(fmt.Sprintf(i18n.T("lbl_status_rec"), runningTotal, total))
+			} else {
+				a.statusLabel.SetText(fmt.Sprintf(i18n.T("lbl_status"), runningTotal, total))
+			}
 		})
 	}
 }
@@ -1249,81 +1427,17 @@ func (a *App) showCameraContextMenu(cameraID string, ev *fyne.PointEvent) {
 			a.showEditCameraDialog(cameraID)
 		}),
 		fyne.NewMenuItem(i18n.T("menu_record_single"), func() {
-			a.toggleSingleCameraRecording(cameraID)
+			a.toggleRecording() // For now, starts/stops composite recording
 		}),
 	)
-	
+
 	widget.ShowPopUpMenuAtPosition(menu, a.window.Canvas(), ev.AbsolutePosition)
-}
-
-func (a *App) toggleSingleCameraRecording(cameraID string) {
-	if a.recorder.IsRecording() {
-		a.stopRecording()
-	} else {
-		a.startSingleCameraRecording(cameraID)
-	}
-}
-
-func (a *App) startSingleCameraRecording(cameraID string) {
-	gridW := 1280
-	gridH := 720
-	fps := 15
-
-	if err := a.recorder.Start(gridW, gridH, fps); err != nil {
-		dialog.ShowError(err, a.window)
-		return
-	}
-
-	a.recordStart = time.Now()
-	a.recordBtn.SetText(i18n.T("btn_stop"))
-	a.recordBtn.Icon = theme.MediaStopIcon()
-	a.recordBtn.Importance = widget.DangerImportance
-	a.recordBtn.Refresh()
-
-	go a.singleRecordLoop(cameraID, gridW, gridH)
-
-	if a.recordTimer != nil {
-		a.recordTimer.Stop()
-	}
-	a.recordTimer = time.NewTicker(time.Second)
-	go func() {
-		for range a.recordTimer.C {
-			elapsed := time.Since(a.recordStart).Truncate(time.Second)
-			fyne.Do(func() {
-				a.recordBtn.SetText(i18n.T("btn_stop_with_time", elapsed))
-				a.recordBtn.Refresh()
-			})
-		}
-	}()
-}
-
-func (a *App) singleRecordLoop(cameraID string, width, height int) {
-	ticker := time.NewTicker(time.Second / 15) // 15 FPS
-	defer ticker.Stop()
-
-	for range ticker.C {
-		if !a.recorder.IsRecording() {
-			return
-		}
-
-		frames := make(map[string]*image.RGBA)
-		panel, exists := a.cameraPanels[cameraID]
-		if exists {
-			if frame := panel.GetLastFrame(); frame != nil {
-				frames[cameraID] = frame
-			}
-		}
-
-		composite := stream.ComposeGridFrame(frames, []string{cameraID}, 1, 1, width, height)
-		a.recorder.WriteFrame(composite)
-	}
 }
 
 func restartApp() {
 	var exe string
 	var err error
-	
-	// Check if running as AppImage
+
 	if appImage := os.Getenv("APPIMAGE"); appImage != "" {
 		exe = appImage
 	} else {

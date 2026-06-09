@@ -10,8 +10,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -47,13 +47,13 @@ func DetectWebcams() []CameraSource {
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	// ffmpeg prints device list to stderr, and exits with an error code since "dummy" input fails
 	output, _ := cmd.CombinedOutput()
-	
+
 	scanner := bufio.NewScanner(bytes.NewReader(output))
 	inVideoSection := false
-	
+
 	for scanner.Scan() {
 		line := scanner.Text()
-		
+
 		if strings.Contains(line, "DirectShow video devices") {
 			inVideoSection = true
 			continue
@@ -62,7 +62,7 @@ func DetectWebcams() []CameraSource {
 			inVideoSection = false
 			continue
 		}
-		
+
 		if inVideoSection {
 			// Extract the name inside quotes. Avoid the alternative name line.
 			if strings.Contains(line, "Alternative name") {
@@ -72,12 +72,12 @@ func DetectWebcams() []CameraSource {
 			lastQuote := strings.LastIndex(line, "\"")
 			if firstQuote != -1 && lastQuote != -1 && firstQuote < lastQuote {
 				name := line[firstQuote+1 : lastQuote]
-				
+
 				// Avoid adding standard virtual cameras as physical webcams
 				if name == "SYG Camera" || name == "OBS Virtual Camera" {
 					continue
 				}
-				
+
 				cameras = append(cameras, CameraSource{
 					ID:      fmt.Sprintf("webcam-win-%d", idx),
 					Name:    name,
@@ -110,7 +110,7 @@ func DetectWebcams() []CameraSource {
 func detectWebcamsPowerShell() []CameraSource {
 	cmd := exec.Command("powershell", "-NoProfile", "-Command", "Get-PnpDevice | Where-Object {($_.Class -eq 'Camera' -or $_.Class -eq 'Image') -and $_.Status -eq 'OK'} | Select-Object -ExpandProperty FriendlyName")
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	
+
 	output, err := cmd.Output()
 	if err != nil {
 		return nil
@@ -141,4 +141,3 @@ func detectWebcamsPowerShell() []CameraSource {
 
 	return cameras
 }
-

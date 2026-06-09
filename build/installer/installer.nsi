@@ -1,8 +1,7 @@
-!define APP_NAME "SYG Camera Helper"
-!define APP_EXE "rtsp-virtual-cam-agent.exe"
+!define APP_NAME "NystaVision"
+!define APP_EXE "SYG Medical - NystaVision.exe"
 !define COMPANY "SYG Medical"
-!define INSTALL_DIR "$PROGRAMFILES64\\SYG Medical\\Camera Helper"
-!define DRIVER_INSTALLER "virtual-camera-installer.exe"
+!define INSTALL_DIR "$PROGRAMFILES64\SYG Medical\NystaVision"
 
 !include "MUI2.nsh"
 
@@ -34,21 +33,14 @@ Section "Main Application" SecMain
   File "..\\..\\out\\windows\\${APP_EXE}"
   File "..\\..\\internal\\tray\\resources\\icon.ico"
 
-  # Bundle dependencies into third_party
+  # Bundle ffmpeg
   SetOutPath "$INSTDIR\\third_party\\ffmpeg"
   File "..\\..\\internal\\assets\\third_party\\ffmpeg\\ffmpeg.exe"
 
-  SetOutPath "$INSTDIR\\third_party\\driver"
-  File "..\\..\\internal\\assets\\third_party\\driver\\virtual-camera-installer.dll"
-
-  # Register Virtual Camera DLL
-  DetailPrint "Registering Virtual Camera Driver..."
-  ExecWait 'regsvr32 /s "$INSTDIR\\third_party\\driver\\virtual-camera-installer.dll"'
-
   SetOutPath "$INSTDIR"
   WriteUninstaller "$INSTDIR\\Uninstall.exe"
-  CreateShortcut "$SMSTARTUP\\${APP_NAME}.lnk" "$INSTDIR\\${APP_EXE}" "" "$INSTDIR\\icon.ico" 0
   CreateShortcut "$SMPROGRAMS\\${APP_NAME}.lnk" "$INSTDIR\\${APP_EXE}" "" "$INSTDIR\\icon.ico" 0
+  CreateShortcut "$DESKTOP\\${APP_NAME}.lnk" "$INSTDIR\\${APP_EXE}" "" "$INSTDIR\\icon.ico" 0
 
   # Add to Add/Remove Programs
   WriteRegStr HKLM "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${APP_NAME}" "DisplayName" "${APP_NAME}"
@@ -57,17 +49,7 @@ Section "Main Application" SecMain
   WriteRegStr HKLM "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${APP_NAME}" "Publisher" "${COMPANY}"
 SectionEnd
 
-Section "Desktop Shortcut" SecDesktop
-  SetOutPath "$INSTDIR"
-  CreateShortcut "$DESKTOP\\${APP_NAME}.lnk" "$INSTDIR\\${APP_EXE}" "" "$INSTDIR\\icon.ico" 0
-SectionEnd
-
 Section "Uninstall"
-  # Unregister Virtual Camera DLL
-  DetailPrint "Unregistering Virtual Camera Driver..."
-  ExecWait 'regsvr32 /u /s "$INSTDIR\\third_party\\driver\\virtual-camera-installer.dll"'
-
-  Delete "$SMSTARTUP\\${APP_NAME}.lnk"
   Delete "$SMPROGRAMS\\${APP_NAME}.lnk"
   Delete "$DESKTOP\\${APP_NAME}.lnk"
   Delete "$INSTDIR\\${APP_EXE}"
@@ -90,12 +72,9 @@ Function .onInit
   Abort
 
 uninst:
-  # Run the uninstaller
   ClearErrors
-  ExecWait '$R0 /S _?=$INSTDIR' # _?=$INSTDIR tells it to run in place and wait
+  ExecWait '$R0 /S _?=$INSTDIR'
   IfErrors done
-  # The uninstaller might not have deleted everything if it was running, so we manually clean if needed
-  # but usually /S _?=$INSTDIR is enough.
 
 done:
 FunctionEnd

@@ -7,11 +7,14 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
+
+	"github.com/jeandeaual/go-locale"
 )
 
 const (
 	vendorDir = "SYG"
-	appDir    = "CameraHelper"
+	appDir    = "NystaVision"
 	fileName  = "config.json"
 
 	MinCameras = 2
@@ -40,16 +43,20 @@ type SavedLayout struct {
 // Config holds the application configuration.
 type Config struct {
 	// General settings
-	AutoStart           bool   `json:"auto_start"`
-	TargetVirtualCamera string `json:"target_virtual_camera"`
-	LinuxVideoDevice    string `json:"linux_video_device"`
-	DriverMode          string `json:"driver_mode"`
-	BridgePort          int    `json:"bridge_port"`
-	DriverInstaller     string `json:"driver_installer"`
-	DriverBridge        string `json:"driver_bridge"`
-	FFmpegPath          string `json:"ffmpeg_path"`
-	LogLevel            string `json:"log_level"`
-	Language            string `json:"language"`
+	AutoStart     bool   `json:"auto_start"`
+	FFmpegPath    string `json:"ffmpeg_path"`
+	LogLevel      string `json:"log_level"`
+	Language      string `json:"language"`
+	TutorialShown bool   `json:"tutorial_shown"`
+	RecordingsDir string `json:"recordings_dir"`
+
+	// Deprecated driver fields — kept for backward compat, not written by Normalize
+	TargetVirtualCamera string `json:"target_virtual_camera,omitempty"`
+	LinuxVideoDevice    string `json:"linux_video_device,omitempty"`
+	DriverMode          string `json:"driver_mode,omitempty"`
+	BridgePort          int    `json:"bridge_port,omitempty"`
+	DriverInstaller     string `json:"driver_installer,omitempty"`
+	DriverBridge        string `json:"driver_bridge,omitempty"`
 
 	// Multi-camera fields
 	Cameras          []CameraSource `json:"cameras"`
@@ -68,16 +75,12 @@ type legacyConfigJSON struct {
 
 func Default() Config {
 	return Config{
-		AutoStart:           false,
-		TargetVirtualCamera: "SYG Camera",
-		LinuxVideoDevice:    "/dev/video10",
-		DriverMode:          "bridge",
-		BridgePort:          18080,
-		DriverInstaller:     `third_party\\driver\\virtual-camera-installer.exe`,
-		DriverBridge:        `third_party\\driver\\virtual-camera-bridge.exe`,
-		FFmpegPath:          `third_party\\ffmpeg\\ffmpeg.exe`,
-		LogLevel:            "info",
-		Language:            "tr",
+		AutoStart:     false,
+		FFmpegPath:    "",
+		LogLevel:      "info",
+		Language:      detectSystemLanguage(),
+		TutorialShown: false,
+		RecordingsDir: defaultRecordingsDir(),
 		Cameras: []CameraSource{
 			{
 				ID:      "cam-1",
@@ -101,6 +104,41 @@ func Default() Config {
 			},
 		},
 	}
+}
+
+func defaultRecordingsDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = os.TempDir()
+	}
+
+	docsDir := filepath.Join(home, "Documents", "NystaVision")
+	if runtime.GOOS == "windows" {
+		if docs := os.Getenv("USERPROFILE"); docs != "" {
+			docsDir = filepath.Join(docs, "Documents", "NystaVision")
+		}
+	}
+	return docsDir
+}
+
+// detectSystemLanguage reads the OS locale and maps it to a supported language code.
+func detectSystemLanguage() string {
+	locales, err := locale.GetLocales()
+	if err != nil || len(locales) == 0 {
+		return "en"
+	}
+	tag := strings.ToLower(locales[0])
+	if len(tag) >= 2 {
+		switch tag[:2] {
+		case "tr":
+			return "tr"
+		case "ar":
+			return "ar"
+		default:
+			return "en"
+		}
+	}
+	return "en"
 }
 
 func LoadOrCreate() (Config, string, error) {
@@ -127,8 +165,13 @@ func LoadOrCreate() (Config, string, error) {
 	}
 
 	cfg := Default()
+	// Override language detection for existing configs (we don't want to change it)
+	cfg.Language = ""
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return Config{}, "", fmt.Errorf("parse config: %w", err)
+	}
+	if cfg.Language == "" {
+		cfg.Language = detectSystemLanguage()
 	}
 
 	// Migrate legacy single-camera config: if "rtsp_url" is present and cameras is empty
@@ -156,6 +199,39 @@ func LoadOrCreate() (Config, string, error) {
 				FPS:     30,
 				Enabled: true,
 			},
+		}
+	}
+
+	// Apply active layout or defaults only if the config cameras list is invalid/broken
+	if len(cfg.Cameras) < MinCameras {
+		loaded := false
+		// Try active layout first
+		if cfg.ActiveLayoutName != "" {
+			for _, l := range cfg.SavedLayouts {
+				if l.Name == cfg.ActiveLayoutName && len(l.Cameras) >= MinCameras {
+					cfg.Cameras = make([]CameraSource, len(l.Cameras))
+					copy(cfg.Cameras, l.Cameras)
+					loaded = true
+					break
+				}
+			}
+		}
+		// If active layout was invalid/missing, try first saved layout
+		if !loaded && len(cfg.SavedLayouts) > 0 {
+			for _, l := range cfg.SavedLayouts {
+				if len(l.Cameras) >= MinCameras {
+					cfg.Cameras = make([]CameraSource, len(l.Cameras))
+					copy(cfg.Cameras, l.Cameras)
+					cfg.ActiveLayoutName = l.Name
+					loaded = true
+					break
+				}
+			}
+		}
+		// If still invalid, fallback to default camera list
+		if !loaded {
+			cfg.Cameras = Default().Cameras
+			cfg.ActiveLayoutName = ""
 		}
 	}
 
@@ -240,24 +316,6 @@ func (c *Config) Normalize() {
 		}
 	}
 
-	if c.BridgePort <= 0 {
-		c.BridgePort = 18080
-	}
-	if c.TargetVirtualCamera == "" {
-		c.TargetVirtualCamera = "SYG Camera"
-	}
-	if c.LinuxVideoDevice == "" {
-		c.LinuxVideoDevice = "/dev/video10"
-	}
-	if c.DriverMode == "" {
-		c.DriverMode = "bridge"
-	}
-	if c.DriverInstaller == "" {
-		c.DriverInstaller = `third_party\\driver\\virtual-camera-installer.exe`
-	}
-	if c.DriverBridge == "" {
-		c.DriverBridge = `third_party\\driver\\virtual-camera-bridge.exe`
-	}
 	if c.FFmpegPath == "" {
 		if runtime.GOOS == "windows" {
 			c.FFmpegPath = `third_party\\ffmpeg\\ffmpeg.exe`
@@ -269,7 +327,10 @@ func (c *Config) Normalize() {
 		c.LogLevel = "info"
 	}
 	if c.Language == "" {
-		c.Language = "tr"
+		c.Language = detectSystemLanguage()
+	}
+	if c.RecordingsDir == "" {
+		c.RecordingsDir = defaultRecordingsDir()
 	}
 
 	// Ensure RTSPServerCamera is set to a valid camera ID, prioritizing RTSP camera

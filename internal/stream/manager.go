@@ -20,8 +20,8 @@ import (
 	"sync"
 	"time"
 
-	"rtsp-virtual-cam-agent/internal/config"
-	"rtsp-virtual-cam-agent/internal/logging"
+	"nystavision/internal/config"
+	"nystavision/internal/logging"
 )
 
 type State struct {
@@ -575,7 +575,7 @@ func (m *Manager) broadcastFrame(width, height int, pix []byte) {
 	if m.rgbaImg == nil || m.rgbaImg.Rect.Dx() != width || m.rgbaImg.Rect.Dy() != height {
 		m.rgbaImg = image.NewRGBA(image.Rect(0, 0, width, height))
 	}
-	
+
 	// FFmpeg's rawvideo output is configured to "-pix_fmt rgba" for both platforms,
 	// so the byte order is already RGBA. Just use fast memory copy.
 	copy(m.rgbaImg.Pix, pix)

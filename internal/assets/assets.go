@@ -42,7 +42,7 @@ func extractDir(path string, targetDir string) error {
 }
 
 func extractFile(srcPath string, dstPath string) error {
-	// Check if file exists and has same size? 
+	// Check if file exists and has same size?
 	// For simplicity, we extract if missing or we could overwrite.
 	if _, err := os.Stat(dstPath); err == nil {
 		return nil // Already exists

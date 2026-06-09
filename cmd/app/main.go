@@ -6,8 +6,9 @@ import (
 	"path/filepath"
 	"runtime"
 
-	"rtsp-virtual-cam-agent/internal/assets"
-	"rtsp-virtual-cam-agent/internal/tray"
+	"nystavision/internal/assets"
+	"nystavision/internal/singleinstance"
+	"nystavision/internal/tray"
 
 	"github.com/go-gl/glfw/v3.3/glfw"
 )
@@ -18,6 +19,17 @@ func init() {
 }
 
 func main() {
+	// Ensure only one instance runs at a time
+	first, err := singleinstance.Acquire()
+	if err != nil {
+		log.Printf("single-instance check error: %v", err)
+	}
+	if !first {
+		// Another instance is already running — exit silently
+		os.Exit(0)
+	}
+	defer singleinstance.Release()
+
 	if runtime.GOOS == "windows" {
 		exe, err := os.Executable()
 		if err == nil {
@@ -50,4 +62,3 @@ func main() {
 		os.Exit(1)
 	}
 }
-

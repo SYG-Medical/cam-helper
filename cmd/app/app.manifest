@@ -3,10 +3,10 @@
   <assemblyIdentity
     version="1.0.0.0"
     processorArchitecture="amd64"
-    name="SYGMedical.CameraHelper"
+    name="SYGMedical.NystaVision"
     type="win32"
   />
-  <description>SYG Camera Helper</description>
+  <description>NystaVision Camera Monitor</description>
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>
       <requestedPrivileges>

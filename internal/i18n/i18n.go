@@ -28,7 +28,7 @@ func init() {
 			continue
 		}
 		langCode := strings.TrimSuffix(file.Name(), ".json")
-		
+
 		data, err := localeFiles.ReadFile("locales/" + file.Name())
 		if err != nil {
 			fmt.Printf("Error reading locale %s: %v\n", file.Name(), err)
@@ -60,7 +60,7 @@ func Init(lang string) {
 func T(key string, args ...interface{}) string {
 	langMap, ok := translations[currentLang]
 	if !ok {
-		return formatStr(key, args...)
+		return formatStr(args, key)
 	}
 
 	val, ok := langMap[key]
@@ -68,16 +68,16 @@ func T(key string, args ...interface{}) string {
 		// Fallback to TR if key is missing in current language
 		if trMap, ok := translations["tr"]; ok {
 			if trVal, ok := trMap[key]; ok {
-				return formatStr(trVal, args...)
+				return formatStr(args, trVal)
 			}
 		}
-		return formatStr(key, args...)
+		return formatStr(args, key)
 	}
 
-	return formatStr(val, args...)
+	return formatStr(args, val)
 }
 
-func formatStr(str string, args ...interface{}) string {
+func formatStr(args []interface{}, str string) string {
 	if len(args) > 0 {
 		return fmt.Sprintf(str, args...)
 	}

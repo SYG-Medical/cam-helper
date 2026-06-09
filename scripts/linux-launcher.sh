@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_NAME="SYG Camera Helper"
-CONFIG_DIR="${HOME}/.config/SYG/CameraHelper"
+APP_NAME="NystaVision"
+CONFIG_DIR="${HOME}/.config/SYG/NystaVision"
 CONFIG_FILE="${CONFIG_DIR}/config.json"
-CACHE_DIR="${HOME}/.cache/SYG/CameraHelper"
+CACHE_DIR="${HOME}/.cache/SYG/NystaVision"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APPDIR_ROOT="${APPDIR:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
-AGENT_BIN="${APPDIR_ROOT}/usr/bin/rtsp-virtual-cam-agent"
-SETUP_HELPER="${APPDIR_ROOT}/usr/lib/rtsp-virtual-cam-agent/setup-v4l2loopback.sh"
-CONFIG_TEMPLATE="${APPDIR_ROOT}/usr/lib/rtsp-virtual-cam-agent/config.example.json"
+AGENT_BIN="${APPDIR_ROOT}/usr/bin/nystavision"
+SETUP_HELPER="${APPDIR_ROOT}/usr/lib/nystavision/setup-v4l2loopback.sh"
+CONFIG_TEMPLATE="${APPDIR_ROOT}/usr/lib/nystavision/config.example.json"
 
 if [[ ! -x "${AGENT_BIN}" ]]; then
-  AGENT_BIN="${APPDIR_ROOT}/app"
+  AGENT_BIN="${APPDIR_ROOT}/nystavision"
 fi
 if [[ ! -x "${SETUP_HELPER}" ]]; then
   SETUP_HELPER="${APPDIR_ROOT}/scripts/setup-v4l2loopback.sh"

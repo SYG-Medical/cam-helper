@@ -9,6 +9,8 @@ import (
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/widget"
+
+	"nystavision/internal/i18n"
 )
 
 // CameraPanel represents a single camera view in the grid.
@@ -50,9 +52,9 @@ func NewCameraPanel(cameraID, cameraName string, onSelect func(string), onRightC
 	placeholder := image.NewRGBA(image.Rect(0, 0, 320, 240))
 	// Fill with dark gray
 	for i := 0; i < len(placeholder.Pix); i += 4 {
-		placeholder.Pix[i] = 30   // R
-		placeholder.Pix[i+1] = 30 // G
-		placeholder.Pix[i+2] = 30 // B
+		placeholder.Pix[i] = 30    // R
+		placeholder.Pix[i+1] = 30  // G
+		placeholder.Pix[i+2] = 30  // B
 		placeholder.Pix[i+3] = 255 // A
 	}
 
@@ -81,7 +83,7 @@ func NewCameraPanel(cameraID, cameraName string, onSelect func(string), onRightC
 
 	// Stopped overlay
 	cp.stoppedRect = canvas.NewRectangle(color.RGBA{R: 0, G: 0, B: 0, A: 160})
-	cp.stoppedText = canvas.NewText("Durduruldu", color.RGBA{R: 200, G: 200, B: 200, A: 255})
+	cp.stoppedText = canvas.NewText(i18n.T("lbl_stopped"), color.White)
 	cp.stoppedText.Alignment = fyne.TextAlignCenter
 	cp.stoppedText.TextSize = 16
 	cp.stoppedText.TextStyle = fyne.TextStyle{Bold: true}
@@ -103,7 +105,7 @@ func NewCameraPanel(cameraID, cameraName string, onSelect func(string), onRightC
 
 	// Dropdown selector
 	cp.sourceSelect = widget.NewSelect(nil, nil)
-	cp.sourceSelect.PlaceHolder = "Kaynak Seçin"
+	cp.sourceSelect.PlaceHolder = i18n.T("lbl_select_source")
 
 	// Combine: preview on top, select dropdown at the bottom
 	cp.content = container.NewBorder(

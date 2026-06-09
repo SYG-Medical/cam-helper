@@ -4,17 +4,17 @@ import (
 	"fmt"
 	"sync"
 
-	"rtsp-virtual-cam-agent/internal/config"
-	"rtsp-virtual-cam-agent/internal/logging"
+	"nystavision/internal/config"
+	"nystavision/internal/logging"
 )
 
 // MultiManager orchestrates multiple camera stream managers.
 type MultiManager struct {
-	streams  map[string]*Manager // cameraID → Manager
-	mu       sync.Mutex
-	logger   *logging.Logger
-	cfg      *config.Config
-	cfgPath  string
+	streams map[string]*Manager // cameraID → Manager
+	mu      sync.Mutex
+	logger  *logging.Logger
+	cfg     *config.Config
+	cfgPath string
 }
 
 // NewMultiManager creates a new multi-camera manager.

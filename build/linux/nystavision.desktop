@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=NystaVision
+Comment=NystaVision Camera Monitor
+Exec=nystavision-launcher
+Icon=nystavision
+Categories=AudioVideo;Utility;
+Terminal=false
