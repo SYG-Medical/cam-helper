@@ -363,41 +363,53 @@ func (m *Manager) buildWebcamArgs(cam config.CameraSource) []string {
 }
 
 func (m *Manager) resolveFFmpegPath() (string, error) {
-	m.mu.Lock()
-	candidate := m.globalCfg.FFmpegPath
-	m.mu.Unlock()
+	// 1. Always check the bundled ffmpeg next to our executable first.
+	//    This is the path the installer places ffmpeg into.
+	if exe, err := os.Executable(); err == nil {
+		localName := "ffmpeg"
+		if runtime.GOOS == "windows" {
+			localName = "ffmpeg.exe"
+		}
+		bundled := filepath.Join(filepath.Dir(exe), "third_party", "ffmpeg", localName)
+		if info, err := os.Stat(bundled); err == nil && !info.IsDir() {
+			return bundled, nil
+		}
+	}
 
+	// 2. On non-Windows, try system ffmpeg.
 	if runtime.GOOS != "windows" {
 		if path, err := exec.LookPath("ffmpeg"); err == nil {
 			return path, nil
 		}
 	}
 
-	if path, err := exec.LookPath(candidate); err == nil {
-		return path, nil
-	}
-	if runtime.GOOS != "windows" && strings.HasSuffix(strings.ToLower(candidate), "ffmpeg.exe") {
-		if path, err := exec.LookPath("ffmpeg"); err == nil {
+	// 3. Try the config candidate via LookPath (handles PATH and absolute paths).
+	m.mu.Lock()
+	candidate := m.globalCfg.FFmpegPath
+	m.mu.Unlock()
+
+	if candidate != "" {
+		if path, err := exec.LookPath(candidate); err == nil {
 			return path, nil
 		}
-	}
 
-	if filepath.IsAbs(candidate) {
-		if _, err := os.Stat(candidate); err != nil {
-			return "", fmt.Errorf("ffmpeg missing: %s", candidate)
+		// If absolute, check it exists as a file.
+		if filepath.IsAbs(candidate) {
+			if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+				return candidate, nil
+			}
 		}
-		return candidate, nil
+
+		// Resolve relative candidate against executable directory.
+		if exe, err := os.Executable(); err == nil {
+			resolved := filepath.Join(filepath.Dir(exe), filepath.FromSlash(candidate))
+			if info, err := os.Stat(resolved); err == nil && !info.IsDir() {
+				return resolved, nil
+			}
+		}
 	}
 
-	exe, err := os.Executable()
-	if err != nil {
-		return "", fmt.Errorf("resolve executable path: %w", err)
-	}
-	resolved := filepath.Join(filepath.Dir(exe), filepath.FromSlash(candidate))
-	if _, err := os.Stat(resolved); err != nil {
-		return "", fmt.Errorf("ffmpeg missing: %s", resolved)
-	}
-	return resolved, nil
+	return "", fmt.Errorf("ffmpeg not found: checked bundled path and config candidate %q", candidate)
 }
 
 func (m *Manager) recordRunning() {

@@ -4,7 +4,7 @@ set -e
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT_DIR="$REPO_ROOT/out/windows"
 DIST_DIR="$REPO_ROOT/dist"
-APP_EXE="$OUT_DIR/rtsp-virtual-cam-agent.exe"
+APP_EXE="$OUT_DIR/SYG Medical - NystaVision.exe"
 FFMPEG_EXE="$REPO_ROOT/internal/assets/third_party/ffmpeg/ffmpeg.exe"
 DRIVER_INSTALLER="$REPO_ROOT/internal/assets/third_party/driver/virtual-camera-installer.exe"
 BRIDGE_EXE="$REPO_ROOT/internal/assets/third_party/driver/virtual-camera-bridge.exe"

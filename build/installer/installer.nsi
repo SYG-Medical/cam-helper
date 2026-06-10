@@ -39,8 +39,6 @@ Section "Main Application" SecMain
 
   SetOutPath "$INSTDIR"
   WriteUninstaller "$INSTDIR\\Uninstall.exe"
-  CreateShortcut "$SMPROGRAMS\\${APP_NAME}.lnk" "$INSTDIR\\${APP_EXE}" "" "$INSTDIR\\icon.ico" 0
-  CreateShortcut "$DESKTOP\\${APP_NAME}.lnk" "$INSTDIR\\${APP_EXE}" "" "$INSTDIR\\icon.ico" 0
 
   # Add to Add/Remove Programs
   WriteRegStr HKLM "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${APP_NAME}" "DisplayName" "${APP_NAME}"
@@ -48,6 +46,21 @@ Section "Main Application" SecMain
   WriteRegStr HKLM "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${APP_NAME}" "DisplayIcon" "$INSTDIR\\icon.ico"
   WriteRegStr HKLM "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${APP_NAME}" "Publisher" "${COMPANY}"
 SectionEnd
+
+Section "Create Desktop Shortcut" SecDesktopShortcut
+  CreateShortcut "$DESKTOP\\${APP_NAME}.lnk" "$INSTDIR\\${APP_EXE}" "" "$INSTDIR\\icon.ico" 0
+SectionEnd
+
+Section "Create Start Menu Shortcut" SecStartMenuShortcut
+  CreateShortcut "$SMPROGRAMS\\${APP_NAME}.lnk" "$INSTDIR\\${APP_EXE}" "" "$INSTDIR\\icon.ico" 0
+SectionEnd
+
+# Description of sections
+!insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecMain} "Main application and required components."
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecDesktopShortcut} "Create a shortcut for NystaVision on your Desktop."
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecStartMenuShortcut} "Create a NystaVision shortcut in your Start Menu."
+!insertmacro MUI_FUNCTION_DESCRIPTION_END
 
 Section "Uninstall"
   Delete "$SMPROGRAMS\\${APP_NAME}.lnk"

@@ -318,7 +318,7 @@ func (c *Config) Normalize() {
 
 	if c.FFmpegPath == "" {
 		if runtime.GOOS == "windows" {
-			c.FFmpegPath = `third_party\\ffmpeg\\ffmpeg.exe`
+			c.FFmpegPath = `third_party\ffmpeg\ffmpeg.exe`
 		} else {
 			c.FFmpegPath = "ffmpeg"
 		}
