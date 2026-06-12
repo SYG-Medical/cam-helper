@@ -54,7 +54,7 @@ type App struct {
 	// UI elements
 	statusLabel     *widget.Label
 	startStopAllBtn *widget.Button
-	cameraGrid      *fyne.Container
+	cameraGrid      fyne.CanvasObject
 	gridContainer   *fyne.Container
 	cameraPanels    map[string]*ui.CameraPanel
 	selectedCamera  string
@@ -526,7 +526,7 @@ func (a *App) showEditCameraDialog(cameraID string) {
 }
 
 func (a *App) buildCameraGrid() {
-	cols, _ := ui.CalculateGrid(len(a.cfg.Cameras))
+	cols, rows := ui.CalculateGrid(len(a.cfg.Cameras))
 
 	a.cameraPanels = make(map[string]*ui.CameraPanel)
 	objects := make([]fyne.CanvasObject, 0, len(a.cfg.Cameras))
@@ -541,7 +541,7 @@ func (a *App) buildCameraGrid() {
 		objects = append(objects, panel)
 	}
 
-	a.cameraGrid = container.NewGridWithColumns(cols, objects...)
+	a.cameraGrid = ui.BuildResizableCameraGrid(objects, cols, rows)
 	a.gridContainer = container.NewStack(a.cameraGrid)
 
 	if len(a.cameraOrder) > 0 && a.selectedCamera == "" {
@@ -551,7 +551,7 @@ func (a *App) buildCameraGrid() {
 
 func (a *App) rebuildGrid() {
 	a.cameraOrder = getCameraOrder(a.cfg.Cameras)
-	cols, _ := ui.CalculateGrid(len(a.cfg.Cameras))
+	cols, rows := ui.CalculateGrid(len(a.cfg.Cameras))
 
 	objects := make([]fyne.CanvasObject, 0, len(a.cfg.Cameras))
 	newPanels := make(map[string]*ui.CameraPanel)
@@ -570,7 +570,7 @@ func (a *App) rebuildGrid() {
 	}
 
 	a.cameraPanels = newPanels
-	a.cameraGrid = container.NewGridWithColumns(cols, objects...)
+	a.cameraGrid = ui.BuildResizableCameraGrid(objects, cols, rows)
 	a.gridContainer.RemoveAll()
 	a.gridContainer.Add(a.cameraGrid)
 	a.gridContainer.Refresh()
