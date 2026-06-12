@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"fmt"
 	"image"
+	"image/color"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -36,9 +37,13 @@ import (
 //go:embed resources/icon.png
 var iconData []byte
 
+//go:embed resources/logo.png
+var logoData []byte
+
 type App struct {
 	fyneApp      fyne.App
 	window       fyne.Window
+	splashWindow fyne.Window
 	cfg          *config.Config
 	cfgPath      string
 	logger       *logging.Logger
@@ -77,43 +82,69 @@ type App struct {
 }
 
 func New() (*App, error) {
-	cfg, cfgPath, err := config.LoadOrCreate()
-	if err != nil {
-		return nil, err
-	}
-
-	logger, err := logging.New()
-	if err != nil {
-		return nil, err
-	}
-
-
-
-	multiMgr := stream.NewMultiManager(&cfg, cfgPath, logger)
-	postProc := stream.NewPostProcessor(logger)
-
-	// Initialize i18n
-	i18n.Init(cfg.Language)
-
 	a := app.NewWithID("com.syg.nystavision")
-	w := a.NewWindow(i18n.T("title_app"))
-	w.SetIcon(fyne.NewStaticResource("icon.png", iconData))
+	w := a.NewWindow("NystaVision") // Placeholder title, updated dynamically on load
 
 	appObj := &App{
-		fyneApp:      a,
-		window:       w,
-		cfg:          &cfg,
-		cfgPath:      cfgPath,
-		logger:       logger,
-		multiManager: multiMgr,
-		postProc:     postProc,
-		cameraPanels: make(map[string]*ui.CameraPanel),
-		cameraOrder:  getCameraOrder(cfg.Cameras),
+		fyneApp: a,
+		window:  w,
 	}
 
-	appObj.setupUI()
-	appObj.setupTray()
-	appObj.setupFrameCallbacks()
+	// Create and show splash screen immediately
+	var splash fyne.Window
+	if drv, ok := a.Driver().(desktop.Driver); ok {
+		splash = drv.CreateSplashWindow()
+
+		// Premium white background matching the logo's white background
+		bg := canvas.NewRectangle(color.RGBA{R: 255, G: 255, B: 255, A: 255})
+
+		// Logo image
+		logoRes := fyne.NewStaticResource("logo.png", logoData)
+		logoImg := canvas.NewImageFromResource(logoRes)
+		logoImg.FillMode = canvas.ImageFillContain
+		logoImg.SetMinSize(fyne.NewSize(280, 111))
+
+		// Title and Subtitle
+		title := canvas.NewText("NystaVision", color.RGBA{R: 15, G: 23, B: 42, A: 255}) // Slate 900
+		title.TextSize = 26
+		title.TextStyle = fyne.TextStyle{Bold: true}
+		title.Alignment = fyne.TextAlignCenter
+
+		subtitle := canvas.NewText("Virtual Camera Agent", color.RGBA{R: 100, G: 116, B: 139, A: 255}) // Slate 500
+		subtitle.TextSize = 12
+		subtitle.Alignment = fyne.TextAlignCenter
+
+		// Infinite progress spinner for modern loading look
+		progress := widget.NewProgressBarInfinite()
+
+		// Transparent padding rectangles to constrain progress bar width elegantly
+		progressPadding := canvas.NewRectangle(color.Transparent)
+		progressPadding.SetMinSize(fyne.NewSize(60, 0))
+		progressWrapper := container.NewBorder(nil, nil, progressPadding, progressPadding, progress)
+
+		// Vertical Box layout for elements
+		contentVBox := container.NewVBox(
+			layout.NewSpacer(),
+			container.NewCenter(logoImg),
+			layout.NewSpacer(),
+			title,
+			subtitle,
+			layout.NewSpacer(),
+			progressWrapper,
+			layout.NewSpacer(),
+		)
+
+		splashContent := container.NewStack(
+			bg,
+			container.NewPadded(contentVBox),
+		)
+
+		splash.SetContent(splashContent)
+		splash.Resize(fyne.NewSize(420, 320))
+		splash.Show()
+
+		appObj.splashWindow = splash
+	}
 
 	return appObj, nil
 }
@@ -1324,21 +1355,94 @@ func (a *App) handleClose() {
 }
 
 func (a *App) Run() error {
-	if a.cfg.AutoStart {
-		a.multiManager.StartAll()
-	}
-
-	// Show tutorial on first run
-	if !a.cfg.TutorialShown {
-		// Slight delay so the window renders first
-		time.AfterFunc(500*time.Millisecond, func() {
+	// Start application initialization in the background
+	startTime := time.Now()
+	go func() {
+		cfg, cfgPath, err := config.LoadOrCreate()
+		if err != nil {
 			fyne.Do(func() {
-				a.showTutorial()
+				dialog.ShowError(err, a.window)
+				time.AfterFunc(3*time.Second, func() {
+					a.Quit()
+				})
 			})
-		})
-	}
+			return
+		}
 
-	a.window.ShowAndRun()
+		logger, err := logging.New()
+		if err != nil {
+			fyne.Do(func() {
+				dialog.ShowError(err, a.window)
+				time.AfterFunc(3*time.Second, func() {
+					a.Quit()
+				})
+			})
+			return
+		}
+
+		multiMgr := stream.NewMultiManager(&cfg, cfgPath, logger)
+		postProc := stream.NewPostProcessor(logger)
+
+		// Initialize i18n
+		i18n.Init(cfg.Language)
+
+		a.mu.Lock()
+		a.cfg = &cfg
+		a.cfgPath = cfgPath
+		a.logger = logger
+		a.multiManager = multiMgr
+		a.postProc = postProc
+		a.cameraPanels = make(map[string]*ui.CameraPanel)
+		a.cameraOrder = getCameraOrder(cfg.Cameras)
+		a.mu.Unlock()
+
+		// Perform UI setup on the main thread and show main window
+		fyne.Do(func() {
+			a.window.SetTitle(i18n.T("title_app"))
+			a.window.SetIcon(fyne.NewStaticResource("icon.png", iconData))
+
+			a.setupUI()
+			a.setupTray()
+			a.setupFrameCallbacks()
+
+			showMainAndCloseSplash := func() {
+				// Show main window first, then close splash screen to avoid event loop termination
+				a.window.Show()
+				if a.splashWindow != nil {
+					a.splashWindow.Close()
+				}
+
+				// Start camera streams if AutoStart is true
+				if a.cfg.AutoStart {
+					a.multiManager.StartAll()
+				}
+
+				// Show tutorial on first run
+				if !a.cfg.TutorialShown {
+					// Slight delay so the window renders first
+					time.AfterFunc(500*time.Millisecond, func() {
+						fyne.Do(func() {
+							a.showTutorial()
+						})
+					})
+				}
+			}
+
+			// Ensure the splash screen is visible for at least 1 second (1000ms)
+			elapsed := time.Since(startTime)
+			remaining := 1000 * time.Millisecond - elapsed
+
+			if remaining > 0 {
+				time.AfterFunc(remaining, func() {
+					fyne.Do(showMainAndCloseSplash)
+				})
+			} else {
+				showMainAndCloseSplash()
+			}
+		})
+	}()
+
+	a.fyneApp.Run()
 	return nil
 }
 
@@ -1347,8 +1451,12 @@ func (a *App) Quit() {
 	a.isRecording = false
 	a.mu.Unlock()
 
-	a.multiManager.Close()
-	_ = a.logger.Close()
+	if a.multiManager != nil {
+		a.multiManager.Close()
+	}
+	if a.logger != nil {
+		_ = a.logger.Close()
+	}
 	a.fyneApp.Quit()
 	os.Exit(0)
 }
