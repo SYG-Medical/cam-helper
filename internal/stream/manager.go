@@ -362,7 +362,7 @@ func (m *Manager) buildWebcamArgs(cam config.CameraSource) []string {
 	return args
 }
 
-func (m *Manager) resolveFFmpegPath() (string, error) {
+func ResolveFFmpegPath(candidate string) (string, error) {
 	// 1. Always check the bundled ffmpeg next to our executable first.
 	//    This is the path the installer places ffmpeg into.
 	if exe, err := os.Executable(); err == nil {
@@ -384,10 +384,6 @@ func (m *Manager) resolveFFmpegPath() (string, error) {
 	}
 
 	// 3. Try the config candidate via LookPath (handles PATH and absolute paths).
-	m.mu.Lock()
-	candidate := m.globalCfg.FFmpegPath
-	m.mu.Unlock()
-
 	if candidate != "" {
 		if path, err := exec.LookPath(candidate); err == nil {
 			return path, nil
@@ -411,6 +407,14 @@ func (m *Manager) resolveFFmpegPath() (string, error) {
 
 	return "", fmt.Errorf("ffmpeg not found: checked bundled path and config candidate %q", candidate)
 }
+
+func (m *Manager) resolveFFmpegPath() (string, error) {
+	m.mu.Lock()
+	candidate := m.globalCfg.FFmpegPath
+	m.mu.Unlock()
+	return ResolveFFmpegPath(candidate)
+}
+
 
 func (m *Manager) recordRunning() {
 	m.mu.Lock()

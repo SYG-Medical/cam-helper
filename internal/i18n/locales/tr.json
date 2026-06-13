@@ -90,7 +90,7 @@
   "record_patient_label": "Hasta adı:",
   "record_patient_placeholder": "Hasta adı (boş bırakılabilir)",
   "record_patient_btn": "Kaydet",
-  "record_processing": "Videolar işleniyor...",
+  "record_processing": "Videolar işleniyor, lütfen uygulamayı kapatmayın...",
   "record_done_title": "Kayıt Kaydedildi",
   "record_done_msg": "Tüm videolar şuraya kaydedildi:\n%s",
   "record_done_open": "Klasörü Aç",

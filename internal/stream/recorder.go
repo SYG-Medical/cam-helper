@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -26,16 +25,17 @@ import (
 
 // Recorder records the composite camera grid view as an MP4 file.
 type Recorder struct {
-	mu        sync.Mutex
-	recording bool
-	cancel    context.CancelFunc
-	ffmpegCmd *exec.Cmd
-	stdin     io.WriteCloser
-	tempFile  string
-	width     int
-	height    int
-	fps       int
-	logger    *logging.Logger
+	mu         sync.Mutex
+	recording  bool
+	cancel     context.CancelFunc
+	ffmpegCmd  *exec.Cmd
+	stdin      io.WriteCloser
+	tempFile   string
+	width      int
+	height     int
+	fps        int
+	logger     *logging.Logger
+	ffmpegPath string
 
 	frameMu    sync.Mutex
 	lastFrame  *image.RGBA
@@ -43,8 +43,9 @@ type Recorder struct {
 }
 
 // NewRecorder creates a new Recorder instance.
-func NewRecorder(logger *logging.Logger) *Recorder {
+func NewRecorder(ffmpegPath string, logger *logging.Logger) *Recorder {
 	return &Recorder{
+		ffmpegPath: ffmpegPath,
 		logger:     logger,
 		frameReady: make(chan struct{}, 1),
 	}
@@ -67,19 +68,10 @@ func (r *Recorder) Start(width, height, fps int) error {
 	r.height = height
 	r.fps = fps
 
-	// Resolve ffmpeg path
-	ffmpegPath := "ffmpeg"
-	if exe, err := os.Executable(); err == nil {
-		localName := "ffmpeg"
-		if runtime.GOOS == "windows" {
-			localName = "ffmpeg.exe"
-		}
-		localFFmpeg := filepath.Join(filepath.Dir(exe), "third_party", "ffmpeg", localName)
-		if _, err := os.Stat(localFFmpeg); err == nil {
-			ffmpegPath = localFFmpeg
-		} else if p, err := exec.LookPath(localName); err == nil {
-			ffmpegPath = p
-		}
+	// Use specified ffmpeg path
+	ffmpegPath := r.ffmpegPath
+	if ffmpegPath == "" {
+		ffmpegPath = "ffmpeg"
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -231,9 +223,13 @@ func (r *Recorder) Stop() (string, error) {
 	tempFile := r.tempFile
 	r.logger.Printf("[recorder] Recording stopped: %s", tempFile)
 
-	// Verify file exists
-	if _, err := os.Stat(tempFile); err != nil {
+	// Verify file exists and has content
+	info, err := os.Stat(tempFile)
+	if err != nil {
 		return "", fmt.Errorf("recording file not found: %w", err)
+	}
+	if info.Size() == 0 {
+		return "", fmt.Errorf("recording file is empty (0 bytes) - FFmpeg may have crashed or failed to start")
 	}
 
 	return tempFile, nil

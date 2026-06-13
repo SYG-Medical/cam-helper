@@ -3,10 +3,8 @@ package stream
 import (
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
@@ -15,13 +13,15 @@ import (
 
 // PostProcessor handles the post-recording crop and save pipeline.
 type PostProcessor struct {
-	logger *logging.Logger
+	ffmpegPath string
+	logger     *logging.Logger
 }
 
 // NewPostProcessor creates a new PostProcessor.
-func NewPostProcessor(logger *logging.Logger) *PostProcessor {
-	return &PostProcessor{logger: logger}
+func NewPostProcessor(ffmpegPath string, logger *logging.Logger) *PostProcessor {
+	return &PostProcessor{ffmpegPath: ffmpegPath, logger: logger}
 }
+
 
 // CameraSegment describes one camera's position in the composite grid.
 type CameraSegment struct {
@@ -50,7 +50,10 @@ func (p *PostProcessor) Process(
 	outDir string,
 	progress chan<- float64,
 ) ProcessResult {
-	ffmpegPath := resolveFFmpegPath()
+	ffmpegPath := p.ffmpegPath
+	if ffmpegPath == "" {
+		ffmpegPath = "ffmpeg"
+	}
 	timestamp := time.Now().Format("20060102_150405")
 
 	var files []string
@@ -168,6 +171,10 @@ func (p *PostProcessor) Process(
 		report()
 	}
 
+	if len(files) == 0 {
+		return ProcessResult{OutputDir: outDir, Files: files, Err: fmt.Errorf("no video files could be processed (FFmpeg may have exited with errors or not been found)")}
+	}
+
 	return ProcessResult{OutputDir: outDir, Files: files}
 }
 
@@ -183,24 +190,7 @@ func GetOutputDir(recordingsDir, patientName string) string {
 	return filepath.Join(recordingsDir, folderName)
 }
 
-// resolveFFmpegPath finds the ffmpeg binary.
-func resolveFFmpegPath() string {
-	ffmpegPath := "ffmpeg"
-	if exe, err := os.Executable(); err == nil {
-		localName := "ffmpeg"
-		if runtime.GOOS == "windows" {
-			localName = "ffmpeg.exe"
-		}
-		localFFmpeg := filepath.Join(filepath.Dir(exe), "third_party", "ffmpeg", localName)
-		if _, err := os.Stat(localFFmpeg); err == nil {
-			return localFFmpeg
-		}
-		if p, err := exec.LookPath(localName); err == nil {
-			ffmpegPath = p
-		}
-	}
-	return ffmpegPath
-}
+
 
 // sanitizeFilename removes characters not safe for filenames.
 func sanitizeFilename(name string) string {

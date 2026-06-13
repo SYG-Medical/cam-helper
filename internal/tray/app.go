@@ -159,6 +159,9 @@ func getCameraOrder(cameras []config.CameraSource) []string {
 	return order
 }
 
+
+
+
 func (a *App) setupUI() {
 	a.window.Resize(fyne.NewSize(960, 640))
 	a.window.SetCloseIntercept(a.handleClose)
@@ -798,7 +801,18 @@ func (a *App) startRecording() {
 	a.mu.Unlock()
 
 	// Find/resolve recorder
-	rec := stream.NewRecorder(a.logger)
+	var ffmpegPath string
+	var err error
+	if a.cfg != nil {
+		ffmpegPath, err = stream.ResolveFFmpegPath(a.cfg.FFmpegPath)
+	} else {
+		ffmpegPath, err = stream.ResolveFFmpegPath("")
+	}
+	if err != nil {
+		dialog.ShowError(fmt.Errorf("FFmpeg bulunamadı! Kayıt başlatılamıyor. Lütfen ayarlardan FFmpeg yolunu kontrol edin.\n\nHata: %v", err), a.window)
+		return
+	}
+	rec := stream.NewRecorder(ffmpegPath, a.logger)
 	if err := rec.Start(gridW, gridH, fps); err != nil {
 		dialog.ShowError(err, a.window)
 		return
@@ -1014,14 +1028,17 @@ func (a *App) showPatientNameDialog(tempFile string, segments []stream.CameraSeg
 
 				<-done
 
-				// Clean up temp file
-				_ = os.Remove(tempFile)
+				// Clean up temp file only if no error occurred
+				if result.Err == nil {
+					_ = os.Remove(tempFile)
+				}
 
 				fyne.Do(func() {
 					progressDlg.Hide()
 
 					if result.Err != nil {
-						dialog.ShowError(result.Err, a.window)
+						detailedErr := fmt.Errorf("%v\n\nRaw recording file was NOT deleted and is saved at:\n%s", result.Err, tempFile)
+						dialog.ShowError(detailedErr, a.window)
 						return
 					}
 
@@ -1380,8 +1397,24 @@ func (a *App) Run() error {
 			return
 		}
 
+		resolvedFFmpeg, err := stream.ResolveFFmpegPath(cfg.FFmpegPath)
+		if err != nil {
+			logger.Printf("[init] FATAL: ffmpeg path resolution failed: %v", err)
+			fyne.Do(func() {
+				a.window.Show()
+				if a.splashWindow != nil {
+					a.splashWindow.Close()
+				}
+				dialog.ShowError(fmt.Errorf("Kritik Hata: FFmpeg bulunamadı. Uygulama çalıştırılamıyor.\nLog dosyalarını kontrol edin veya sisteminize FFmpeg yükleyin.\n\nHata: %v", err), a.window)
+				time.AfterFunc(5*time.Second, func() {
+					a.Quit()
+				})
+			})
+			return
+		}
+
 		multiMgr := stream.NewMultiManager(&cfg, cfgPath, logger)
-		postProc := stream.NewPostProcessor(logger)
+		postProc := stream.NewPostProcessor(resolvedFFmpeg, logger)
 
 		// Initialize i18n
 		i18n.Init(cfg.Language)
@@ -1416,6 +1449,8 @@ func (a *App) Run() error {
 				if a.cfg.AutoStart {
 					a.multiManager.StartAll()
 				}
+
+
 
 				// Show tutorial on first run
 				if !a.cfg.TutorialShown {
