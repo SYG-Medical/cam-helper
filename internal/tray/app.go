@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1303,28 +1304,80 @@ func (a *App) showTutorial() {
 // --- Tray ---
 
 func (a *App) setupTray() {
-	if desk, ok := a.fyneApp.(desktop.App); ok {
-		m := fyne.NewMenu(i18n.T("title_app"),
-			fyne.NewMenuItem(i18n.T("tray_show"), func() {
-				a.window.Show()
-			}),
-			fyne.NewMenuItemSeparator(),
-			fyne.NewMenuItem(i18n.T("tray_start_all"), func() {
-				a.rtspUIStopped = false
-				a.multiManager.StartAll()
-			}),
-			fyne.NewMenuItem(i18n.T("tray_stop_all"), func() {
-				a.rtspUIStopped = true
-				a.multiManager.StopAll()
-			}),
-			fyne.NewMenuItemSeparator(),
-			fyne.NewMenuItem(i18n.T("tray_quit"), func() {
-				a.Quit()
-			}),
-		)
-		desk.SetSystemTrayMenu(m)
-		desk.SetSystemTrayIcon(fyne.NewStaticResource("icon.png", iconData))
+	log.Println("[App] Setting up system tray...")
+	desk, ok := a.fyneApp.(desktop.App)
+	if !ok {
+		log.Println("[App] WARNING: fyneApp does not implement desktop.App! System tray will not be created.")
+		return
 	}
+
+	if runtime.GOOS == "linux" {
+		if err := installLinuxIcon(iconData); err != nil {
+			log.Printf("[App] Failed to install Linux desktop icon: %v", err)
+		} else {
+			log.Println("[App] Linux desktop icon installed/verified successfully.")
+		}
+	}
+
+	m := fyne.NewMenu(i18n.T("title_app"),
+		fyne.NewMenuItem(i18n.T("tray_show"), func() {
+			log.Println("[App] Tray menu: Show clicked")
+			a.window.Show()
+			a.window.RequestFocus()
+		}),
+		fyne.NewMenuItemSeparator(),
+		fyne.NewMenuItem(i18n.T("tray_start_all"), func() {
+			log.Println("[App] Tray menu: Start All clicked")
+			a.rtspUIStopped = false
+			a.multiManager.StartAll()
+		}),
+		fyne.NewMenuItem(i18n.T("tray_stop_all"), func() {
+			log.Println("[App] Tray menu: Stop All clicked")
+			a.rtspUIStopped = true
+			a.multiManager.StopAll()
+		}),
+		fyne.NewMenuItemSeparator(),
+		fyne.NewMenuItem(i18n.T("tray_quit"), func() {
+			log.Println("[App] Tray menu: Quit clicked")
+			a.Quit()
+		}),
+	)
+
+	desk.SetSystemTrayMenu(m)
+	log.Printf("[App] System tray menu set. Embedded icon size: %d bytes", len(iconData))
+	desk.SetSystemTrayIcon(fyne.NewStaticResource("icon.png", iconData))
+	log.Println("[App] System tray icon set successfully.")
+}
+
+func installLinuxIcon(iconData []byte) error {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+
+	// Always ensure standard "nystavision" name is installed
+	names := []string{"nystavision"}
+
+	// Also install using current executable base name (stripped of extensions and lowercased)
+	if exePath, err := os.Executable(); err == nil {
+		exeName := filepath.Base(exePath)
+		exeName = strings.ToLower(strings.TrimSuffix(exeName, filepath.Ext(exeName)))
+		if exeName != "nystavision" && exeName != "" {
+			names = append(names, exeName)
+		}
+	}
+
+	for _, name := range names {
+		iconDir := filepath.Join(homeDir, ".local", "share", "icons", "hicolor", "256x256", "apps")
+		if err := os.MkdirAll(iconDir, 0755); err != nil {
+			return err
+		}
+		iconPath := filepath.Join(iconDir, name+".png")
+		if err := os.WriteFile(iconPath, iconData, 0644); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (a *App) minimizeToBackground() {
@@ -1369,6 +1422,25 @@ func (a *App) handleClose() {
 	}
 
 	dlg.Show()
+}
+
+// ShowAndFocus shows the main window, requests focus, and sends a native notification as fallback.
+func (a *App) ShowAndFocus() {
+	log.Println("[App] ShowAndFocus called - triggering main thread wake up")
+	fyne.Do(func() {
+		log.Println("[App] ShowAndFocus running inside main GUI thread (fyne.Do)")
+		a.window.Show()
+		a.window.RequestFocus()
+		log.Println("[App] window.Show() and RequestFocus() executed")
+
+		// Fallback notification for OS focus-stealing prevention
+		notification := fyne.NewNotification(
+			i18n.T("title_app"),
+			i18n.T("msg_already_running"),
+		)
+		a.fyneApp.SendNotification(notification)
+		log.Println("[App] Fallback notification sent")
+	})
 }
 
 func (a *App) Run() error {

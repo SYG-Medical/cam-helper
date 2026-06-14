@@ -112,6 +112,7 @@
   "tutorial_title_4": "Settings",
   "tutorial_desc_4": "Use the ⚙ button to configure language, auto-start, and recordings folder. You can reopen this tour at any time with the ? button.",
 
+  "msg_already_running": "Application is already running.",
   "btn_yes": "Yes",
   "btn_no": "No"
 }

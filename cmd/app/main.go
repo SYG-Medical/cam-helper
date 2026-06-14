@@ -20,15 +20,43 @@ func init() {
 
 func main() {
 	// Ensure only one instance runs at a time
-	first, err := singleinstance.Acquire()
+	log.Println("[main] Checking for running instance...")
+	ipc, err := singleinstance.NewIPCManager()
 	if err != nil {
-		log.Printf("single-instance check error: %v", err)
+		log.Printf("[main] single-instance init error: %v", err)
 	}
-	if !first {
-		// Another instance is already running — exit silently
-		os.Exit(0)
+	if ipc != nil {
+		first, err := ipc.Listen()
+		if err != nil {
+			log.Printf("[main] single-instance check error: %v", err)
+		}
+		if !first {
+			log.Println("[main] Another instance is already running. Notifying primary instance...")
+			if notifyErr := ipc.NotifyPrimary(); notifyErr != nil {
+				log.Printf("[main] Failed to notify primary instance: %v", notifyErr)
+			} else {
+				log.Println("[main] Successfully notified primary instance.")
+			}
+			os.Exit(0)
+		}
+		log.Println("[main] This is the primary instance. Starting wakeup listener...")
+		defer ipc.Close()
+
+		// Start listening for wakeups in the background
+		go func() {
+			for {
+				ok, err := ipc.AcceptWakeup()
+				if err != nil {
+					log.Printf("[main] AcceptWakeup error (terminating loop): %v", err)
+					break
+				}
+				log.Printf("[main] AcceptWakeup connection received, matches wakeup payload: %v", ok)
+				if ok {
+					singleinstance.TriggerActivate()
+				}
+			}
+		}()
 	}
-	defer singleinstance.Release()
 
 	if runtime.GOOS == "windows" {
 		exe, err := os.Executable()
@@ -56,6 +84,10 @@ func main() {
 		log.Printf("fatal: %v", err)
 		os.Exit(1)
 	}
+
+	singleinstance.SetActivateCallback(func() {
+		app.ShowAndFocus()
+	})
 
 	if err := app.Run(); err != nil {
 		log.Printf("fatal: %v", err)

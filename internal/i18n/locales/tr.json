@@ -112,6 +112,7 @@
   "tutorial_title_4": "Ayarlar",
   "tutorial_desc_4": "⚙ butonundan dil, otomatik başlatma ve kayıtların kaydedileceği klasörü seçebilirsiniz. Bu turu istediğiniz zaman ? butonuyla tekrar açabilirsiniz.",
 
+  "msg_already_running": "Uygulama zaten çalışıyor.",
   "btn_yes": "Evet",
   "btn_no": "Hayır"
 }
