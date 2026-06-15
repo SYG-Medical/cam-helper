@@ -5,10 +5,23 @@ package singleinstance
 import (
 	"errors"
 	"fmt"
-	"time"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
+
+var (
+	modkernel32       = windows.NewLazySystemDLL("kernel32.dll")
+	procWaitNamedPipe = modkernel32.NewProc("WaitNamedPipeW")
+)
+
+func waitNamedPipe(name *uint16, timeout uint32) bool {
+	r1, _, _ := procWaitNamedPipe.Call(
+		uintptr(unsafe.Pointer(name)),
+		uintptr(timeout),
+	)
+	return r1 != 0
+}
 
 type WindowsIPCManager struct {
 	pipeName string
@@ -110,7 +123,7 @@ func (m *WindowsIPCManager) NotifyPrimary() error {
 			break
 		}
 		if err == windows.ERROR_PIPE_BUSY {
-			if !windows.WaitNamedPipe(namePtr, 2000) {
+			if !waitNamedPipe(namePtr, 2000) {
 				return errors.New("timeout waiting for named pipe")
 			}
 			continue
