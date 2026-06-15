@@ -344,6 +344,12 @@ func (m *Manager) buildWebcamArgs(cam config.CameraSource) []string {
 			"-framerate", fmt.Sprintf("%d", cam.FPS),
 			"-video_size", fmt.Sprintf("%dx%d", cam.Width, cam.Height),
 		)
+	} else if runtime.GOOS == "darwin" {
+		args = append(args,
+			"-f", "avfoundation",
+			"-framerate", fmt.Sprintf("%d", cam.FPS),
+			"-video_size", fmt.Sprintf("%dx%d", cam.Width, cam.Height),
+		)
 	}
 
 	args = append(args,

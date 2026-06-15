@@ -64,8 +64,8 @@ func main() {
 			_ = assets.ExtractAll(filepath.Dir(exe))
 		}
 	}
-	if runtime.GOOS != "windows" && runtime.GOOS != "linux" {
-		log.Println("warning: this app targets Windows runtime behavior; launching in compatibility mode")
+	if runtime.GOOS != "windows" && runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		log.Println("warning: launching in compatibility mode for unsupported OS")
 	}
 
 	// Fallback to software rendering if GPU acceleration is not available

@@ -1624,6 +1624,8 @@ func openPath(target string) {
 		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", cleaned)
 	case "linux":
 		cmd = exec.Command("xdg-open", cleaned)
+	case "darwin":
+		cmd = exec.Command("open", cleaned)
 	default:
 		return
 	}
