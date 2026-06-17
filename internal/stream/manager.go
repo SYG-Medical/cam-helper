@@ -270,8 +270,8 @@ func (m *Manager) preparePipeline(ctx context.Context) (*exec.Cmd, error) {
 	useMax := m.globalCfg.UseMaxSupported
 	m.mu.Unlock()
 
-	if isWebcam && useMax {
-		m.applyMaxSupportedCapabilities(ctx)
+	if isWebcam {
+		m.applyBestCapability(ctx, useMax)
 	}
 
 	ffmpegCmd, err := m.buildFFmpegCommand(ctx)
@@ -324,6 +324,18 @@ func (m *Manager) PreviewDimensions() (int, int) {
 		return 640, int(640 * ratio)
 	}
 	return activeW, activeH
+}
+
+func (m *Manager) ActiveResolution() (int, int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.activeW, m.activeH
+}
+
+func (m *Manager) ActiveFPS() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.activeFPS
 }
 
 func (m *Manager) buildRTSPArgs(cam config.CameraSource) []string {
@@ -843,18 +855,7 @@ type CameraCapability struct {
 	VCodec      string
 }
 
-type Cap struct {
-	Width       int
-	Height      int
-	FPS         float64
-	PixelFormat string
-	VCodec      string
-	score       int
-	fpsScore    int
-	isMJPEG     bool
-}
-
-func (m *Manager) applyMaxSupportedCapabilities(ctx context.Context) {
+func (m *Manager) applyBestCapability(ctx context.Context, useMax bool) {
 	ffmpegPath, err := m.resolveFFmpegPath()
 	if err != nil {
 		m.logger.Printf("[%s] failed to resolve ffmpeg path for capability query: %v", m.cam.Name, err)
@@ -863,35 +864,40 @@ func (m *Manager) applyMaxSupportedCapabilities(ctx context.Context) {
 
 	m.mu.Lock()
 	device := m.cam.Device
+	targetW := m.cam.Width
+	targetH := m.cam.Height
+	targetFPS := m.cam.FPS
 	m.mu.Unlock()
 
 	if device == "" {
 		return
 	}
 
-	cap, err := queryMaxCapability(ctx, ffmpegPath, device, m.logger)
+	caps, err := queryCapabilities(ctx, ffmpegPath, device, m.logger)
 	if err != nil {
-		m.logger.Printf("[%s] failed to query max supported capabilities: %v, using default", m.cam.Name, err)
+		m.logger.Printf("[%s] failed to query supported capabilities: %v, using default", m.cam.Name, err)
 		return
 	}
 
+	best := selectBestCapability(caps, targetW, targetH, targetFPS, useMax)
+
 	m.mu.Lock()
-	m.activeW = cap.Width
-	m.activeH = cap.Height
-	m.activeFPS = int(cap.FPS)
-	if cap.VCodec == "mjpeg" {
+	m.activeW = best.Width
+	m.activeH = best.Height
+	m.activeFPS = int(best.FPS)
+	if best.VCodec == "mjpeg" {
 		m.activeFormat = "mjpeg"
-	} else if cap.PixelFormat != "" {
-		m.activeFormat = cap.PixelFormat
+	} else if best.PixelFormat != "" {
+		m.activeFormat = best.PixelFormat
 	} else {
 		m.activeFormat = ""
 	}
-	m.logger.Printf("[%s] applied max supported capability: %dx%d @ %d FPS (format: %s)",
-		m.cam.Name, m.activeW, m.activeH, m.activeFPS, m.activeFormat)
+	m.logger.Printf("[%s] applied selected capability (useMax=%t): %dx%d @ %d FPS (format: %s)",
+		m.cam.Name, useMax, m.activeW, m.activeH, m.activeFPS, m.activeFormat)
 	m.mu.Unlock()
 }
 
-func queryMaxCapability(ctx context.Context, ffmpegPath, device string, logger *logging.Logger) (CameraCapability, error) {
+func queryCapabilities(ctx context.Context, ffmpegPath, device string, logger *logging.Logger) ([]CameraCapability, error) {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
@@ -901,7 +907,7 @@ func queryMaxCapability(ctx context.Context, ffmpegPath, device string, logger *
 	} else if runtime.GOOS == "linux" {
 		cmd = exec.CommandContext(ctx, ffmpegPath, "-f", "v4l2", "-list_formats", "all", "-i", device)
 	} else {
-		return CameraCapability{}, fmt.Errorf("unsupported OS for capability query")
+		return nil, fmt.Errorf("unsupported OS for capability query")
 	}
 	setHideWindow(cmd)
 
@@ -911,68 +917,41 @@ func queryMaxCapability(ctx context.Context, ffmpegPath, device string, logger *
 
 	output := stderr.String()
 	if len(output) == 0 {
-		return CameraCapability{}, fmt.Errorf("no output from ffmpeg format query")
+		return nil, fmt.Errorf("no output from ffmpeg format query")
 	}
 
-	scanner := bufio.NewScanner(strings.NewReader(output))
-	re := regexp.MustCompile(`(pixel_format|vcodec)=(\w+)\s+min s=(\d+)x(\d+)\s+fps=([\d\.]+)\s+max s=(\d+)x(\d+)\s+fps=([\d\.]+)`)
+	var caps []CameraCapability
 
-	var best Cap
-	hasBest := false
+	if runtime.GOOS == "windows" {
+		scanner := bufio.NewScanner(strings.NewReader(output))
+		re := regexp.MustCompile(`(pixel_format|vcodec)=(\w+)\s+min s=(\d+)x(\d+)\s+fps=([\d\.]+)\s+max s=(\d+)x(\d+)\s+fps=([\d\.]+)`)
 
-	for scanner.Scan() {
-		line := scanner.Text()
-		matches := re.FindStringSubmatch(line)
-		if len(matches) == 8 {
-			optVal := matches[2]
-			maxW, _ := strconv.Atoi(matches[5])
-			maxH, _ := strconv.Atoi(matches[6])
-			maxFPS, _ := strconv.ParseFloat(matches[7], 64)
+		for scanner.Scan() {
+			line := scanner.Text()
+			matches := re.FindStringSubmatch(line)
+			if len(matches) == 9 {
+				optVal := matches[2]
+				maxW, _ := strconv.Atoi(matches[6])
+				maxH, _ := strconv.Atoi(matches[7])
+				maxFPS, _ := strconv.ParseFloat(matches[8], 64)
 
-			var pixFmt, vcodec string
-			if matches[1] == "pixel_format" {
-				pixFmt = optVal
-			} else {
-				vcodec = optVal
-			}
-
-			// Score = Width * Height
-			score := maxW * maxH
-			fpsScore := int(maxFPS * 10)
-			isMJPEG := (vcodec == "mjpeg" || pixFmt == "mjpeg")
-
-			current := Cap{
-				Width:       maxW,
-				Height:      maxH,
-				FPS:         maxFPS,
-				PixelFormat: pixFmt,
-				VCodec:      vcodec,
-				score:       score,
-				fpsScore:    fpsScore,
-				isMJPEG:     isMJPEG,
-			}
-
-			if !hasBest {
-				best = current
-				hasBest = true
-			} else {
-				if current.score > best.score {
-					best = current
-				} else if current.score == best.score {
-					if current.fpsScore > best.fpsScore {
-						best = current
-					} else if current.fpsScore == best.fpsScore {
-						if current.isMJPEG && !best.isMJPEG {
-							best = current
-						}
-					}
+				var pixFmt, vcodec string
+				if matches[1] == "pixel_format" {
+					pixFmt = optVal
+				} else {
+					vcodec = optVal
 				}
+
+				caps = append(caps, CameraCapability{
+					Width:       maxW,
+					Height:      maxH,
+					FPS:         maxFPS,
+					PixelFormat: pixFmt,
+					VCodec:      vcodec,
+				})
 			}
 		}
-	}
-
-	if !hasBest {
-		// Fallback parser for Linux v4l2 list_formats output
+	} else if runtime.GOOS == "linux" {
 		linuxScanner := bufio.NewScanner(strings.NewReader(output))
 		reLinux := regexp.MustCompile(`(Raw|Compressed):\s+(\w+)\s+:.*\s+:\s+(.+)`)
 		for linuxScanner.Scan() {
@@ -985,44 +964,121 @@ func queryMaxCapability(ctx context.Context, ffmpegPath, device string, logger *
 				for _, part := range resParts {
 					var w, h int
 					if _, err := fmt.Sscanf(part, "%dx%d", &w, &h); err == nil {
-						score := w * h
-						isMJPEG := (fmtName == "mjpeg")
-						current := Cap{
+						var pixFmt, vcodec string
+						if fmtName == "mjpeg" || fmtName == "h264" {
+							vcodec = fmtName
+						} else {
+							pixFmt = fmtName
+						}
+						// Linux fallback doesn't list FPS natively this way, default to 30
+						caps = append(caps, CameraCapability{
 							Width:       w,
 							Height:      h,
 							FPS:         30.0,
-							PixelFormat: fmtName,
-							score:       score,
-							fpsScore:    300,
-							isMJPEG:     isMJPEG,
-						}
-						if !hasBest {
-							best = current
-							hasBest = true
-						} else {
-							if current.score > best.score {
-								best = current
-							} else if current.score == best.score {
-								if current.isMJPEG && !best.isMJPEG {
-									best = current
-								}
-							}
-						}
+							PixelFormat: pixFmt,
+							VCodec:      vcodec,
+						})
 					}
 				}
 			}
 		}
 	}
 
-	if !hasBest {
-		return CameraCapability{}, fmt.Errorf("no supported formats parsed")
+	if len(caps) == 0 {
+		return nil, fmt.Errorf("no supported formats parsed")
 	}
 
-	return CameraCapability{
-		Width:       best.Width,
-		Height:      best.Height,
-		FPS:         best.FPS,
-		PixelFormat: best.PixelFormat,
-		VCodec:      best.VCodec,
-	}, nil
+	return caps, nil
+}
+
+func selectBestCapability(caps []CameraCapability, targetW, targetH, targetFPS int, useMax bool) CameraCapability {
+	if len(caps) == 0 {
+		return CameraCapability{}
+	}
+
+	if useMax {
+		best := caps[0]
+		bestScore := best.Width * best.Height
+		bestFpsScore := int(best.FPS * 10)
+		bestIsMJPEG := (best.VCodec == "mjpeg" || best.PixelFormat == "mjpeg")
+
+		for _, current := range caps[1:] {
+			score := current.Width * current.Height
+			fpsScore := int(current.FPS * 10)
+			isMJPEG := (current.VCodec == "mjpeg" || current.PixelFormat == "mjpeg")
+
+			better := false
+			if score > bestScore {
+				better = true
+			} else if score == bestScore {
+				if fpsScore > bestFpsScore {
+					better = true
+				} else if fpsScore == bestFpsScore {
+					if isMJPEG && !bestIsMJPEG {
+						better = true
+					}
+				}
+			}
+
+			if better {
+				best = current
+				bestScore = score
+				bestFpsScore = fpsScore
+				bestIsMJPEG = isMJPEG
+			}
+		}
+		return best
+	}
+
+	abs := func(x int) int {
+		if x < 0 {
+			return -x
+		}
+		return x
+	}
+	absF := func(x float64) float64 {
+		if x < 0 {
+			return -x
+		}
+		return x
+	}
+
+	best := caps[0]
+	bestResDist := abs(best.Width-targetW) + abs(best.Height-targetH)
+	bestFPSDist := absF(best.FPS - float64(targetFPS))
+	bestIsMJPEG := (best.VCodec == "mjpeg" || best.PixelFormat == "mjpeg")
+
+	for _, current := range caps[1:] {
+		resDist := abs(current.Width-targetW) + abs(current.Height-targetH)
+		fpsDist := absF(current.FPS - float64(targetFPS))
+		isMJPEG := (current.VCodec == "mjpeg" || current.PixelFormat == "mjpeg")
+
+		better := false
+		if resDist < bestResDist {
+			better = true
+		} else if resDist == bestResDist {
+			if fpsDist < bestFPSDist {
+				better = true
+			} else if fpsDist == bestFPSDist {
+				if targetFPS >= 30 {
+					if isMJPEG && !bestIsMJPEG {
+						better = true
+					}
+				} else {
+					if !isMJPEG && bestIsMJPEG {
+						better = true
+					}
+				}
+			}
+		}
+
+		if better {
+			best = current
+			bestResDist = resDist
+			bestFPSDist = fpsDist
+			bestIsMJPEG = isMJPEG
+		}
+	}
+
+	return best
 }

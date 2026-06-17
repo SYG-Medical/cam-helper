@@ -791,9 +791,39 @@ func (a *App) startRecording() {
 
 	cols, rows := ui.CalculateGrid(len(a.cfg.Cameras))
 	cellW, cellH := 1280, 720
+	fps := 15
+
+	maxW, maxH, maxFPS := 0, 0, 0
+	for _, cam := range a.cfg.Cameras {
+		if cam.Enabled {
+			mgr := a.multiManager.GetManager(cam.ID)
+			if mgr != nil {
+				w, h := mgr.ActiveResolution()
+				f := mgr.ActiveFPS()
+				if w > maxW {
+					maxW = w
+				}
+				if h > maxH {
+					maxH = h
+				}
+				if f > maxFPS {
+					maxFPS = f
+				}
+			}
+		}
+	}
+	if maxW > 0 {
+		cellW = maxW
+	}
+	if maxH > 0 {
+		cellH = maxH
+	}
+	if maxFPS > 0 {
+		fps = maxFPS
+	}
+
 	gridW := cols * cellW
 	gridH := rows * cellH
-	fps := 15
 
 	a.recordCols = cols
 	a.recordRows = rows
@@ -845,11 +875,11 @@ func (a *App) startRecording() {
 	}()
 
 	// Start composite record loop
-	go a.compositeRecordLoop(rec, cols, rows, gridW, gridH)
+	go a.compositeRecordLoop(rec, cols, rows, gridW, gridH, fps)
 }
 
-func (a *App) compositeRecordLoop(rec *stream.Recorder, cols, rows, gridW, gridH int) {
-	ticker := time.NewTicker(time.Second / 15) // 15 FPS
+func (a *App) compositeRecordLoop(rec *stream.Recorder, cols, rows, gridW, gridH, fps int) {
+	ticker := time.NewTicker(time.Second / time.Duration(fps))
 	defer ticker.Stop()
 
 	for range ticker.C {
