@@ -48,6 +48,7 @@ func (p *PostProcessor) Process(
 	compositePath string,
 	segments []CameraSegment,
 	outDir string,
+	startTime time.Time,
 	progress chan<- float64,
 ) ProcessResult {
 	ffmpegPath := p.ffmpegPath
@@ -79,11 +80,14 @@ func (p *PostProcessor) Process(
 		outFile := filepath.Join(outDir, fmt.Sprintf("%s_%s.mp4", safeName, timestamp))
 
 		cropFilter := fmt.Sprintf("crop=%d:%d:%d:%d", seg.W, seg.H, seg.X, seg.Y)
+		drawtextFilter := fmt.Sprintf(`drawtext=text='%%{pts\:localtime\:%d\:%%Y-%%m-%%d %%H\:%%M\:%%S}':fontcolor=white:fontsize=24:box=1:boxcolor=black@0.5:boxborderw=5:x=w-tw-10:y=h-th-10`, startTime.Unix())
+		vfFilter := fmt.Sprintf("%s,%s", cropFilter, drawtextFilter)
+
 		args := []string{
 			"-hide_banner",
 			"-loglevel", "warning",
 			"-i", compositePath,
-			"-vf", cropFilter,
+			"-vf", vfFilter,
 			"-c:v", "libx264",
 			"-preset", "fast",
 			"-crf", "23",
@@ -117,7 +121,28 @@ func (p *PostProcessor) Process(
 		}
 
 		if err := cmd.Wait(); err != nil {
-			p.logger.Printf("[post_processor] ffmpeg crop error for %s: %v", seg.Name, err)
+			p.logger.Printf("[post_processor] ffmpeg crop with timestamp error for %s: %v. Retrying without timestamp...", seg.Name, err)
+			// Fallback: Crop without drawtext
+			fallbackArgs := []string{
+				"-hide_banner",
+				"-loglevel", "warning",
+				"-i", compositePath,
+				"-vf", cropFilter,
+				"-c:v", "libx264",
+				"-preset", "fast",
+				"-crf", "23",
+				"-pix_fmt", "yuv420p",
+				"-y",
+				outFile,
+			}
+			cmdFallback := exec.CommandContext(ctx, ffmpegPath, fallbackArgs...)
+			setHideWindow(cmdFallback)
+			if errFallback := cmdFallback.Run(); errFallback != nil {
+				p.logger.Printf("[post_processor] fallback crop error for %s: %v", seg.Name, errFallback)
+			} else {
+				files = append(files, outFile)
+				p.logger.Printf("[post_processor] saved %s (without timestamp)", outFile)
+			}
 		} else {
 			files = append(files, outFile)
 			p.logger.Printf("[post_processor] saved %s", outFile)
@@ -130,11 +155,12 @@ func (p *PostProcessor) Process(
 	// Save general composite with timestamp overlay using ffmpeg drawtext
 	if ctx.Err() == nil {
 		outFile := filepath.Join(outDir, fmt.Sprintf("Genel_%s.mp4", timestamp))
+		drawtextFilter := fmt.Sprintf(`drawtext=text='%%{pts\:localtime\:%d\:%%Y-%%m-%%d %%H\:%%M\:%%S}':fontcolor=white:fontsize=24:box=1:boxcolor=black@0.5:boxborderw=5:x=w-tw-10:y=h-th-10`, startTime.Unix())
 		args := []string{
 			"-hide_banner",
 			"-loglevel", "warning",
 			"-i", compositePath,
-			"-vf", `drawtext=text='%{localtime\:%Y-%m-%d %H\:%M\:%S}':fontcolor=white:fontsize=24:box=1:boxcolor=black@0.5:boxborderw=5:x=w-tw-10:y=h-th-10`,
+			"-vf", drawtextFilter,
 			"-c:v", "libx264",
 			"-preset", "fast",
 			"-crf", "23",

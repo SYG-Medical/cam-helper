@@ -914,6 +914,7 @@ func (a *App) stopRecording() {
 		rows := a.recordRows
 		cellW := a.recordCellW
 		cellH := a.recordCellH
+		recStart := a.recordStart
 		cameras := make([]config.CameraSource, len(a.cfg.Cameras))
 		copy(cameras, a.cfg.Cameras)
 		cameraOrder := make([]string, len(a.cameraOrder))
@@ -940,7 +941,7 @@ func (a *App) stopRecording() {
 
 		// Show patient name dialog
 		fyne.Do(func() {
-			a.showPatientNameDialog(tempFile, segments)
+			a.showPatientNameDialog(tempFile, segments, recStart)
 		})
 	}()
 }
@@ -972,7 +973,7 @@ func buildCameraSegments(cameras []config.CameraSource, order []string, cols, ro
 	return segments
 }
 
-func (a *App) showPatientNameDialog(tempFile string, segments []stream.CameraSegment) {
+func (a *App) showPatientNameDialog(tempFile string, segments []stream.CameraSegment, recStart time.Time) {
 	nameEntry := widget.NewEntry()
 	nameEntry.SetPlaceHolder(i18n.T("record_patient_placeholder"))
 
@@ -1017,7 +1018,7 @@ func (a *App) showPatientNameDialog(tempFile string, segments []stream.CameraSeg
 				done := make(chan struct{})
 
 				go func() {
-					result = a.postProc.Process(ctx, tempFile, segments, outDir, progressCh)
+					result = a.postProc.Process(ctx, tempFile, segments, outDir, recStart, progressCh)
 					close(done)
 				}()
 
