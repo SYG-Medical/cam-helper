@@ -42,6 +42,7 @@
   "lbl_ip_url": "IP URL",
   "lbl_webcam": "Webcam",
   "lbl_autostart": "Otomatik başlat",
+  "lbl_use_max_supported": "Maksimum Desteklenen Çözünürlük ve FPS Kullan (Global Shutter/HD kameralar için)",
   "lbl_language": "Dil / Language",
   "lbl_recordings_dir": "Kayıt Klasörü",
   "lbl_version": "Versiyon: %s",

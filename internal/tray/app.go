@@ -1080,6 +1080,9 @@ func (a *App) showSettingsDialog() {
 	autostartCheck := widget.NewCheck(i18n.T("lbl_autostart"), nil)
 	autostartCheck.SetChecked(a.cfg.AutoStart)
 
+	useMaxCheck := widget.NewCheck(i18n.T("lbl_use_max_supported"), nil)
+	useMaxCheck.SetChecked(a.cfg.UseMaxSupported)
+
 	langOptions := []string{"🇹🇷 Türkçe", "🇬🇧 English", "🇸🇦 العربية"}
 	langMap := map[string]string{
 		"🇹🇷 Türkçe":  "tr",
@@ -1165,18 +1168,21 @@ func (a *App) showSettingsDialog() {
 		container.NewBorder(nil, nil, widget.NewLabel(i18n.T("lbl_language")+": "), nil, langSelect),
 		recordingsRow,
 		autostartCheck,
+		useMaxCheck,
 		widget.NewSeparator(),
 		container.NewGridWithColumns(2, configBtn, logsBtn),
 		container.NewHBox(layout.NewSpacer(), versionText),
 	)
 
 	d := dialog.NewCustom(i18n.T("title_settings"), i18n.T("btn_save_close"), settingsContent, a.window)
-	d.Resize(fyne.NewSize(500, 260))
+	d.Resize(fyne.NewSize(500, 280))
 
 	d.SetOnClosed(func() {
 		a.mu.Lock()
 		a.cfg.AutoStart = autostartCheck.Checked
 		a.cfg.RecordingsDir = recordingsDirEntry.Text
+		useMaxChanged := a.cfg.UseMaxSupported != useMaxCheck.Checked
+		a.cfg.UseMaxSupported = useMaxCheck.Checked
 		_ = config.Save(*a.cfg, a.cfgPath)
 		a.mu.Unlock()
 
@@ -1184,6 +1190,22 @@ func (a *App) showSettingsDialog() {
 			_ = autostart.SetEnabled(true)
 		} else {
 			_ = autostart.SetEnabled(false)
+		}
+
+		if a.multiManager != nil {
+			a.multiManager.UpdateConfig(*a.cfg)
+		}
+
+		if useMaxChanged && a.multiManager != nil {
+			// Restart active webcam streams immediately
+			for _, cam := range a.cfg.Cameras {
+				if cam.Enabled && cam.Type == "webcam" {
+					if a.multiManager.GetState(cam.ID).Running {
+						a.multiManager.StopCamera(cam.ID)
+						_ = a.multiManager.StartCamera(cam.ID)
+					}
+				}
+			}
 		}
 	})
 

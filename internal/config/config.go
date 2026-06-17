@@ -28,10 +28,11 @@ type CameraSource struct {
 	Type    string `json:"type"`     // "rtsp" or "webcam"
 	RTSPURL string `json:"rtsp_url"` // used when Type == "rtsp"
 	Device  string `json:"device"`   // used when Type == "webcam", e.g. "/dev/video0"
-	Width   int    `json:"width"`
-	Height  int    `json:"height"`
-	FPS     int    `json:"fps"`
-	Enabled bool   `json:"enabled"`
+	Width       int    `json:"width"`
+	Height      int    `json:"height"`
+	FPS         int    `json:"fps"`
+	PixelFormat string `json:"pixel_format,omitempty"`
+	Enabled     bool   `json:"enabled"`
 }
 
 // SavedLayout stores a named layout with full camera+source information.
@@ -45,10 +46,11 @@ type Config struct {
 	// General settings
 	AutoStart     bool   `json:"auto_start"`
 	FFmpegPath    string `json:"ffmpeg_path"`
-	LogLevel      string `json:"log_level"`
-	Language      string `json:"language"`
-	TutorialShown bool   `json:"tutorial_shown"`
-	RecordingsDir string `json:"recordings_dir"`
+	LogLevel        string `json:"log_level"`
+	Language        string `json:"language"`
+	TutorialShown   bool   `json:"tutorial_shown"`
+	RecordingsDir   string `json:"recordings_dir"`
+	UseMaxSupported bool   `json:"use_max_supported"`
 
 	// Deprecated driver fields — kept for backward compat, not written by Normalize
 	TargetVirtualCamera string `json:"target_virtual_camera,omitempty"`
@@ -79,8 +81,9 @@ func Default() Config {
 		FFmpegPath:    "",
 		LogLevel:      "info",
 		Language:      detectSystemLanguage(),
-		TutorialShown: false,
-		RecordingsDir: defaultRecordingsDir(),
+		TutorialShown:   false,
+		RecordingsDir:   defaultRecordingsDir(),
+		UseMaxSupported: false,
 		Cameras: []CameraSource{
 			{
 				ID:      "cam-1",

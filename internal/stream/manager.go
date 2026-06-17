@@ -15,7 +15,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -43,6 +45,12 @@ type Manager struct {
 	restartCount uint64
 	onFrame      func(width, height int, pix []byte)
 	onFrameMu    sync.Mutex
+
+	// Active running parameters (overridden when UseMaxSupported is enabled)
+	activeW      int
+	activeH      int
+	activeFPS    int
+	activeFormat string
 
 	// HTTP MJPEG Server fields (only used when this camera is the RTSP server camera)
 	httpServer      *http.Server
@@ -122,6 +130,11 @@ func (m *Manager) Start() error {
 		return fmt.Errorf("unknown camera type %q for camera %q", m.cam.Type, m.cam.Name)
 	}
 
+	m.activeW = m.cam.Width
+	m.activeH = m.cam.Height
+	m.activeFPS = m.cam.FPS
+	m.activeFormat = m.cam.PixelFormat
+
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
 	m.state = State{Running: true, StartedAt: time.Now(), RestartCount: m.restartCount}
@@ -168,6 +181,10 @@ func (m *Manager) State() State {
 func (m *Manager) UpdateCamera(cam config.CameraSource) {
 	m.mu.Lock()
 	m.cam = cam
+	m.activeW = cam.Width
+	m.activeH = cam.Height
+	m.activeFPS = cam.FPS
+	m.activeFormat = cam.PixelFormat
 	m.mu.Unlock()
 }
 
@@ -248,6 +265,15 @@ func (m *Manager) supervise(ctx context.Context) {
 }
 
 func (m *Manager) preparePipeline(ctx context.Context) (*exec.Cmd, error) {
+	m.mu.Lock()
+	isWebcam := m.cam.Type == "webcam"
+	useMax := m.globalCfg.UseMaxSupported
+	m.mu.Unlock()
+
+	if isWebcam && useMax {
+		m.applyMaxSupportedCapabilities(ctx)
+	}
+
 	ffmpegCmd, err := m.buildFFmpegCommand(ctx)
 	if err != nil {
 		return nil, err
@@ -282,21 +308,22 @@ func (m *Manager) buildFFmpegCommand(ctx context.Context) (*exec.Cmd, error) {
 
 func (m *Manager) PreviewDimensions() (int, int) {
 	m.mu.Lock()
-	cam := m.cam
+	activeW := m.activeW
+	activeH := m.activeH
 	enableHTTP := m.enableHTTPServer
 	m.mu.Unlock()
 
 	// If it is the RTSP server camera, we keep the original resolution for the stdout preview pipeline
 	if enableHTTP {
-		return cam.Width, cam.Height
+		return activeW, activeH
 	}
 
 	// Otherwise, scale preview down to max 640 width to save CPU/memory copy overhead
-	if cam.Width > 640 {
-		ratio := float64(cam.Height) / float64(cam.Width)
+	if activeW > 640 {
+		ratio := float64(activeH) / float64(activeW)
 		return 640, int(640 * ratio)
 	}
-	return cam.Width, cam.Height
+	return activeW, activeH
 }
 
 func (m *Manager) buildRTSPArgs(cam config.CameraSource) []string {
@@ -331,24 +358,45 @@ func (m *Manager) buildWebcamArgs(cam config.CameraSource) []string {
 		"-flags", "low_delay",
 	}
 
+	m.mu.Lock()
+	activeW := m.activeW
+	activeH := m.activeH
+	activeFPS := m.activeFPS
+	activeFormat := m.activeFormat
+	m.mu.Unlock()
+
 	if runtime.GOOS == "linux" {
+		args = append(args, "-f", "v4l2")
+		if activeFormat != "" {
+			args = append(args, "-input_format", activeFormat)
+		} else {
+			args = append(args, "-input_format", "mjpeg") // Force MJPEG for high FPS
+		}
 		args = append(args,
-			"-f", "v4l2",
-			"-input_format", "mjpeg", // Force MJPEG for high FPS
-			"-framerate", fmt.Sprintf("%d", cam.FPS),
-			"-video_size", fmt.Sprintf("%dx%d", cam.Width, cam.Height),
+			"-framerate", fmt.Sprintf("%d", activeFPS),
+			"-video_size", fmt.Sprintf("%dx%d", activeW, activeH),
 		)
 	} else if runtime.GOOS == "windows" {
 		args = append(args,
 			"-f", "dshow",
-			"-framerate", fmt.Sprintf("%d", cam.FPS),
-			"-video_size", fmt.Sprintf("%dx%d", cam.Width, cam.Height),
+			"-rtbufsize", "256M",
+		)
+		if activeFormat != "" {
+			if activeFormat == "mjpeg" {
+				args = append(args, "-vcodec", "mjpeg")
+			} else {
+				args = append(args, "-pixel_format", activeFormat)
+			}
+		}
+		args = append(args,
+			"-framerate", fmt.Sprintf("%d", activeFPS),
+			"-video_size", fmt.Sprintf("%dx%d", activeW, activeH),
 		)
 	} else if runtime.GOOS == "darwin" {
 		args = append(args,
 			"-f", "avfoundation",
-			"-framerate", fmt.Sprintf("%d", cam.FPS),
-			"-video_size", fmt.Sprintf("%dx%d", cam.Width, cam.Height),
+			"-framerate", fmt.Sprintf("%d", activeFPS),
+			"-video_size", fmt.Sprintf("%dx%d", activeW, activeH),
 		)
 	}
 
@@ -360,7 +408,7 @@ func (m *Manager) buildWebcamArgs(cam config.CameraSource) []string {
 	w, h := m.PreviewDimensions()
 	// Webcam cameras always output rgba rawvideo to stdout for preview
 	args = append(args,
-		"-vf", fmt.Sprintf("scale=%d:%d,fps=%d", w, h, cam.FPS),
+		"-vf", fmt.Sprintf("scale=%d:%d,fps=%d", w, h, activeFPS),
 		"-pix_fmt", "rgba",
 		"-f", "rawvideo", "-",
 	)
@@ -579,7 +627,7 @@ func (m *Manager) broadcastFrame(width, height int, pix []byte) {
 	}
 
 	m.mu.Lock()
-	fps := m.cam.FPS
+	fps := m.activeFPS
 	m.mu.Unlock()
 	if fps <= 0 {
 		fps = 30
@@ -785,4 +833,196 @@ func (m *Manager) startHTTPServer() {
 			m.logger.Printf("HTTP server error: %v", err)
 		}
 	}()
+}
+
+type CameraCapability struct {
+	Width       int
+	Height      int
+	FPS         float64
+	PixelFormat string
+	VCodec      string
+}
+
+type Cap struct {
+	Width       int
+	Height      int
+	FPS         float64
+	PixelFormat string
+	VCodec      string
+	score       int
+	fpsScore    int
+	isMJPEG     bool
+}
+
+func (m *Manager) applyMaxSupportedCapabilities(ctx context.Context) {
+	ffmpegPath, err := m.resolveFFmpegPath()
+	if err != nil {
+		m.logger.Printf("[%s] failed to resolve ffmpeg path for capability query: %v", m.cam.Name, err)
+		return
+	}
+
+	m.mu.Lock()
+	device := m.cam.Device
+	m.mu.Unlock()
+
+	if device == "" {
+		return
+	}
+
+	cap, err := queryMaxCapability(ctx, ffmpegPath, device, m.logger)
+	if err != nil {
+		m.logger.Printf("[%s] failed to query max supported capabilities: %v, using default", m.cam.Name, err)
+		return
+	}
+
+	m.mu.Lock()
+	m.activeW = cap.Width
+	m.activeH = cap.Height
+	m.activeFPS = int(cap.FPS)
+	if cap.VCodec == "mjpeg" {
+		m.activeFormat = "mjpeg"
+	} else if cap.PixelFormat != "" {
+		m.activeFormat = cap.PixelFormat
+	} else {
+		m.activeFormat = ""
+	}
+	m.logger.Printf("[%s] applied max supported capability: %dx%d @ %d FPS (format: %s)",
+		m.cam.Name, m.activeW, m.activeH, m.activeFPS, m.activeFormat)
+	m.mu.Unlock()
+}
+
+func queryMaxCapability(ctx context.Context, ffmpegPath, device string, logger *logging.Logger) (CameraCapability, error) {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.CommandContext(ctx, ffmpegPath, "-f", "dshow", "-list_options", "true", "-i", device)
+	} else if runtime.GOOS == "linux" {
+		cmd = exec.CommandContext(ctx, ffmpegPath, "-f", "v4l2", "-list_formats", "all", "-i", device)
+	} else {
+		return CameraCapability{}, fmt.Errorf("unsupported OS for capability query")
+	}
+	setHideWindow(cmd)
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	_ = cmd.Run() // Exit code is expected to be non-zero since input is dummy/incomplete
+
+	output := stderr.String()
+	if len(output) == 0 {
+		return CameraCapability{}, fmt.Errorf("no output from ffmpeg format query")
+	}
+
+	scanner := bufio.NewScanner(strings.NewReader(output))
+	re := regexp.MustCompile(`(pixel_format|vcodec)=(\w+)\s+min s=(\d+)x(\d+)\s+fps=([\d\.]+)\s+max s=(\d+)x(\d+)\s+fps=([\d\.]+)`)
+
+	var best Cap
+	hasBest := false
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		matches := re.FindStringSubmatch(line)
+		if len(matches) == 8 {
+			optVal := matches[2]
+			maxW, _ := strconv.Atoi(matches[5])
+			maxH, _ := strconv.Atoi(matches[6])
+			maxFPS, _ := strconv.ParseFloat(matches[7], 64)
+
+			var pixFmt, vcodec string
+			if matches[1] == "pixel_format" {
+				pixFmt = optVal
+			} else {
+				vcodec = optVal
+			}
+
+			// Score = Width * Height
+			score := maxW * maxH
+			fpsScore := int(maxFPS * 10)
+			isMJPEG := (vcodec == "mjpeg" || pixFmt == "mjpeg")
+
+			current := Cap{
+				Width:       maxW,
+				Height:      maxH,
+				FPS:         maxFPS,
+				PixelFormat: pixFmt,
+				VCodec:      vcodec,
+				score:       score,
+				fpsScore:    fpsScore,
+				isMJPEG:     isMJPEG,
+			}
+
+			if !hasBest {
+				best = current
+				hasBest = true
+			} else {
+				if current.score > best.score {
+					best = current
+				} else if current.score == best.score {
+					if current.fpsScore > best.fpsScore {
+						best = current
+					} else if current.fpsScore == best.fpsScore {
+						if current.isMJPEG && !best.isMJPEG {
+							best = current
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if !hasBest {
+		// Fallback parser for Linux v4l2 list_formats output
+		linuxScanner := bufio.NewScanner(strings.NewReader(output))
+		reLinux := regexp.MustCompile(`(Raw|Compressed):\s+(\w+)\s+:.*\s+:\s+(.+)`)
+		for linuxScanner.Scan() {
+			lLine := linuxScanner.Text()
+			lMatches := reLinux.FindStringSubmatch(lLine)
+			if len(lMatches) == 4 {
+				fmtName := lMatches[2]
+				resList := lMatches[3]
+				resParts := strings.Fields(resList)
+				for _, part := range resParts {
+					var w, h int
+					if _, err := fmt.Sscanf(part, "%dx%d", &w, &h); err == nil {
+						score := w * h
+						isMJPEG := (fmtName == "mjpeg")
+						current := Cap{
+							Width:       w,
+							Height:      h,
+							FPS:         30.0,
+							PixelFormat: fmtName,
+							score:       score,
+							fpsScore:    300,
+							isMJPEG:     isMJPEG,
+						}
+						if !hasBest {
+							best = current
+							hasBest = true
+						} else {
+							if current.score > best.score {
+								best = current
+							} else if current.score == best.score {
+								if current.isMJPEG && !best.isMJPEG {
+									best = current
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if !hasBest {
+		return CameraCapability{}, fmt.Errorf("no supported formats parsed")
+	}
+
+	return CameraCapability{
+		Width:       best.Width,
+		Height:      best.Height,
+		FPS:         best.FPS,
+		PixelFormat: best.PixelFormat,
+		VCodec:      best.VCodec,
+	}, nil
 }

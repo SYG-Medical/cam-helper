@@ -271,6 +271,9 @@ func (mm *MultiManager) Config() config.Config {
 func (mm *MultiManager) UpdateConfig(cfg config.Config) {
 	mm.mu.Lock()
 	*mm.cfg = cfg
+	for _, mgr := range mm.streams {
+		mgr.UpdateConfig(cfg)
+	}
 	mm.mu.Unlock()
 }
 

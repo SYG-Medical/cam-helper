@@ -42,6 +42,7 @@
   "lbl_ip_url": "عنوان IP",
   "lbl_webcam": "كاميرا ويب",
   "lbl_autostart": "تشغيل تلقائي",
+  "lbl_use_max_supported": "استخدام أقصى دقة ومعدل إطارات مدعوم (لكاميرات الغالق العالمي/HD)",
   "lbl_language": "اللغة / Language",
   "lbl_recordings_dir": "مجلد التسجيلات",
   "lbl_version": "الإصدار: %s",

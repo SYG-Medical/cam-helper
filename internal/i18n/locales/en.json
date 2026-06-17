@@ -42,6 +42,7 @@
   "lbl_ip_url": "IP URL",
   "lbl_webcam": "Webcam",
   "lbl_autostart": "Auto Start",
+  "lbl_use_max_supported": "Use Maximum Supported Resolution & FPS (for Global Shutter/HD cameras)",
   "lbl_language": "Language",
   "lbl_recordings_dir": "Recordings Folder",
   "lbl_version": "Version: %s",
