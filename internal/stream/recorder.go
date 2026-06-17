@@ -25,17 +25,18 @@ import (
 
 // Recorder records the composite camera grid view as an MP4 file.
 type Recorder struct {
-	mu         sync.Mutex
-	recording  bool
-	cancel     context.CancelFunc
-	ffmpegCmd  *exec.Cmd
-	stdin      io.WriteCloser
-	tempFile   string
-	width      int
-	height     int
-	fps        int
-	logger     *logging.Logger
-	ffmpegPath string
+	mu            sync.Mutex
+	recording     bool
+	cancel        context.CancelFunc
+	ffmpegCmd     *exec.Cmd
+	stdin         io.WriteCloser
+	tempFile      string
+	width         int
+	height        int
+	fps           int
+	logger        *logging.Logger
+	ffmpegPath    string
+	recordingsDir string
 
 	frameMu    sync.Mutex
 	lastFrame  *image.RGBA
@@ -43,11 +44,14 @@ type Recorder struct {
 }
 
 // NewRecorder creates a new Recorder instance.
-func NewRecorder(ffmpegPath string, logger *logging.Logger) *Recorder {
+// recordingsDir is used to place the temporary recording file under a "Temp"
+// subfolder inside that directory, avoiding the system temp dir.
+func NewRecorder(ffmpegPath string, recordingsDir string, logger *logging.Logger) *Recorder {
 	return &Recorder{
-		ffmpegPath: ffmpegPath,
-		logger:     logger,
-		frameReady: make(chan struct{}, 1),
+		ffmpegPath:    ffmpegPath,
+		recordingsDir: recordingsDir,
+		logger:        logger,
+		frameReady:    make(chan struct{}, 1),
 	}
 }
 
@@ -60,8 +64,12 @@ func (r *Recorder) Start(width, height, fps int) error {
 		return fmt.Errorf("already recording")
 	}
 
-	// Create temp file
-	tempDir := os.TempDir()
+	// Create temp file inside RecordingsDir/Temp so it lives on the same
+	// drive as the final recordings (avoids filling the system drive).
+	tempDir := filepath.Join(r.recordingsDir, "Temp")
+	if err := os.MkdirAll(tempDir, 0o755); err != nil {
+		return fmt.Errorf("create temp dir: %w", err)
+	}
 	timestamp := time.Now().Format("20060102_150405")
 	r.tempFile = filepath.Join(tempDir, fmt.Sprintf("nystavision_rec_%s.mp4", timestamp))
 	r.width = width

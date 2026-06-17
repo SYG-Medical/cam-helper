@@ -813,7 +813,7 @@ func (a *App) startRecording() {
 		dialog.ShowError(fmt.Errorf("FFmpeg bulunamadı! Kayıt başlatılamıyor. Lütfen ayarlardan FFmpeg yolunu kontrol edin.\n\nHata: %v", err), a.window)
 		return
 	}
-	rec := stream.NewRecorder(ffmpegPath, a.logger)
+	rec := stream.NewRecorder(ffmpegPath, a.cfg.RecordingsDir, a.logger)
 	if err := rec.Start(gridW, gridH, fps); err != nil {
 		dialog.ShowError(err, a.window)
 		return
