@@ -953,7 +953,7 @@ func queryCapabilities(ctx context.Context, ffmpegPath, device string, logger *l
 		}
 	} else if runtime.GOOS == "linux" {
 		linuxScanner := bufio.NewScanner(strings.NewReader(output))
-		reLinux := regexp.MustCompile(`(Raw|Compressed):\s+(\w+)\s+:.*\s+:\s+(.+)`)
+		reLinux := regexp.MustCompile(`(Raw|Compressed)\s*:\s*(\w+)\s*:\s*[^:]+\s*:\s*(.+)`)
 		for linuxScanner.Scan() {
 			lLine := linuxScanner.Text()
 			lMatches := reLinux.FindStringSubmatch(lLine)

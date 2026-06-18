@@ -80,7 +80,7 @@ func (p *PostProcessor) Process(
 		outFile := filepath.Join(outDir, fmt.Sprintf("%s_%s.mp4", safeName, timestamp))
 
 		cropFilter := fmt.Sprintf("crop=%d:%d:%d:%d", seg.W, seg.H, seg.X, seg.Y)
-		drawtextFilter := fmt.Sprintf(`drawtext=text='%%{pts\:localtime\:%d\:%%Y-%%m-%%d %%H\:%%M\:%%S}':fontcolor=white:fontsize=24:box=1:boxcolor=black@0.5:boxborderw=5:x=w-tw-10:y=h-th-10`, startTime.Unix())
+		drawtextFilter := fmt.Sprintf(`drawtext=text='%%{pts\:localtime\:%d\:%%Y-%%m-%%d %%H\\\:%%M\\\:%%S}':fontcolor=white:fontsize=24:box=1:boxcolor=black@0.5:boxborderw=5:x=w-tw-10:y=h-th-10`, startTime.Unix())
 		vfFilter := fmt.Sprintf("%s,%s", cropFilter, drawtextFilter)
 
 		args := []string{
@@ -155,7 +155,7 @@ func (p *PostProcessor) Process(
 	// Save general composite with timestamp overlay using ffmpeg drawtext
 	if ctx.Err() == nil {
 		outFile := filepath.Join(outDir, fmt.Sprintf("Genel_%s.mp4", timestamp))
-		drawtextFilter := fmt.Sprintf(`drawtext=text='%%{pts\:localtime\:%d\:%%Y-%%m-%%d %%H\:%%M\:%%S}':fontcolor=white:fontsize=24:box=1:boxcolor=black@0.5:boxborderw=5:x=w-tw-10:y=h-th-10`, startTime.Unix())
+		drawtextFilter := fmt.Sprintf(`drawtext=text='%%{pts\:localtime\:%d\:%%Y-%%m-%%d %%H\\\:%%M\\\:%%S}':fontcolor=white:fontsize=24:box=1:boxcolor=black@0.5:boxborderw=5:x=w-tw-10:y=h-th-10`, startTime.Unix())
 		args := []string{
 			"-hide_banner",
 			"-loglevel", "warning",

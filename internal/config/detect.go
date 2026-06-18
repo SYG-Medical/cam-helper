@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"unsafe"
 )
 
 // DetectWebcams scans /sys/class/video4linux/ for real camera devices
@@ -102,6 +103,22 @@ func isV4L2Loopback(sysPath, name string) bool {
 
 // isCaptureDev checks if a video device supports capture (not just output).
 func isCaptureDev(sysPath string) bool {
+	const (
+		vidiocQuerycap        = 0x80685600
+		capVideoCapture       = 0x00000001
+		capVideoCaptureMPlane = 0x00001000
+	)
+
+	type v4l2Capability struct {
+		Driver       [16]byte
+		Card         [32]byte
+		BusInfo      [32]byte
+		Version      uint32
+		Capabilities uint32
+		DeviceCaps   uint32
+		Reserved     [3]uint32
+	}
+
 	// Check device_caps for V4L2_CAP_VIDEO_CAPTURE (0x00000001)
 	// or V4L2_CAP_VIDEO_CAPTURE_MPLANE (0x00001000)
 	capsPath := filepath.Join(sysPath, "device_caps")
@@ -109,20 +126,29 @@ func isCaptureDev(sysPath string) bool {
 		capsStr := strings.TrimSpace(string(data))
 		var caps uint64
 		if _, err := fmt.Sscanf(capsStr, "0x%x", &caps); err == nil {
-			const (
-				capVideoCapture       = 0x00000001
-				capVideoCaptureMPlane = 0x00001000
-			)
 			return caps&capVideoCapture != 0 || caps&capVideoCaptureMPlane != 0
 		}
 	}
 
-	// Fallback: try to open the device readonly. If it works, it's likely a capture device.
+	// Fallback: try to open the device and check capability flags using ioctl
 	base := filepath.Base(sysPath)
 	devPath := filepath.Join("/dev", base)
-	var stat syscall.Stat_t
-	if err := syscall.Stat(devPath, &stat); err == nil {
-		return true
+	fd, err := syscall.Open(devPath, syscall.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return false
 	}
-	return false
+	defer syscall.Close(fd)
+
+	var cap v4l2Capability
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), uintptr(vidiocQuerycap), uintptr(unsafe.Pointer(&cap)))
+	if errno != 0 {
+		return false
+	}
+
+	caps := cap.Capabilities
+	if cap.Capabilities&0x80000000 != 0 { // V4L2_CAP_DEVICE_CAPS
+		caps = cap.DeviceCaps
+	}
+
+	return caps&(capVideoCapture|capVideoCaptureMPlane) != 0
 }

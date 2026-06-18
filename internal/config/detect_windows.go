@@ -64,8 +64,13 @@ func DetectWebcams() []CameraSource {
 		}
 
 		if inVideoSection {
-			// Extract the name inside quotes. Avoid the alternative name line.
 			if strings.Contains(line, "Alternative name") {
+				firstQuote := strings.Index(line, "\"")
+				lastQuote := strings.LastIndex(line, "\"")
+				if firstQuote != -1 && lastQuote != -1 && firstQuote < lastQuote && len(cameras) > 0 {
+					altName := line[firstQuote+1 : lastQuote]
+					cameras[len(cameras)-1].Device = "video=" + altName
+				}
 				continue
 			}
 			firstQuote := strings.Index(line, "\"")
