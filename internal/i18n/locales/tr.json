@@ -115,5 +115,18 @@
 
   "msg_already_running": "Uygulama zaten çalışıyor.",
   "btn_yes": "Evet",
-  "btn_no": "Hayır"
+  "btn_no": "Hayır",
+  "disk_warning_title": "⚠️ Disk Alanı Uyarısı",
+  "disk_warning_msg": "Seçili kayıt konumunda yaklaşık %.1f dakikalık kayıt alanı kaldı.\n\nDisk bölümünü boşaltmak veya başka bir konuma kaydetmek ister misiniz?",
+  "disk_blocked_title": "🚫 Yetersiz Disk Alanı",
+  "disk_blocked_msg": "Seçili kayıt konumunda 1 dakikalık bir video için bile yeterli alan yok.\n\nLütfen disk bölümünü boşaltın veya başka bir konuma kaydetmeyi deneyin.",
+  "disk_btn_change_dir": "Konumu Değiştir",
+  "disk_btn_continue": "Devam Et",
+  "disk_btn_cancel": "İptal",
+  "disk_check_error": "Disk alanı kontrol edilemedi: %v",
+  "disk_live_warning": "⚠️ ~%.1f dk kaldı",
+  "disk_live_critical": "🚨 ~%.1f dk kaldı!",
+  "disk_auto_stop_msg": "Disk alanı tükendi! Kayıt otomatik olarak durduruldu.",
+  "usb_bandwidth_error_title": "⚠️ USB Bant Genişliği Limiti Aşıldı",
+  "usb_bandwidth_error_msg": "%s kamerasını başlatırken 'No space left on device' (USB Bant Genişliği Tıkanıklığı) hatası alındı.\n\nBu hata RAM veya disk alanıyla ilgili değildir. Bilgisayarınızın USB denetleyicisi, bağlı olan tüm kameraların saniyelik veri akışını taşıyamamaktadır.\n\nÇözüm için şunları deneyebilirsiniz:\n1. Kameraları farklı USB portlarına dağıtın (örneğin bazılarını bilgisayarın önüne, bazılarını arkasına veya varsa USB 3.0/mavi portlara takın).\n2. Ayarlar menüsünden kameraların çözünürlüğünü veya FPS değerlerini (örn: 30'dan 15'e) düşürün.\n3. Kameraları bir USB çoklayıcıya (hub) bağladıysanız, çoklayıcıyı iptal edip kameraları doğrudan bilgisayara bağlayın."
 }

@@ -80,6 +80,14 @@ type App struct {
 	recordCellH    int
 	recordCols     int
 	recordRows     int
+
+	// Disk space live monitoring
+	diskBanner      *fyne.Container
+	diskBannerBg    *canvas.Rectangle
+	diskBannerText  *canvas.Text
+	diskMonitorStop chan struct{}
+
+	shownUSBError map[string]bool
 }
 
 func New() (*App, error) {
@@ -87,8 +95,9 @@ func New() (*App, error) {
 	w := a.NewWindow("NystaVision") // Placeholder title, updated dynamically on load
 
 	appObj := &App{
-		fyneApp: a,
-		window:  w,
+		fyneApp:       a,
+		window:        w,
+		shownUSBError: make(map[string]bool),
 	}
 
 	// Create and show splash screen immediately
@@ -547,6 +556,7 @@ func (a *App) buildCameraGrid() {
 
 	a.cameraGrid = ui.BuildResizableCameraGrid(objects, cols, rows)
 	a.gridContainer = container.NewStack(a.cameraGrid)
+	a.initDiskBanner()
 
 	if len(a.cameraOrder) > 0 && a.selectedCamera == "" {
 		a.selectedCamera = a.cameraOrder[0]
@@ -577,6 +587,9 @@ func (a *App) rebuildGrid() {
 	a.cameraGrid = ui.BuildResizableCameraGrid(objects, cols, rows)
 	a.gridContainer.RemoveAll()
 	a.gridContainer.Add(a.cameraGrid)
+	if a.diskBanner != nil {
+		a.gridContainer.Add(a.diskBanner)
+	}
 	a.gridContainer.Refresh()
 
 	a.setupFrameCallbacks()
@@ -831,6 +844,43 @@ func (a *App) startRecording() {
 	a.recordCellH = cellH
 	a.mu.Unlock()
 
+	numCameras := 0
+	for _, cam := range a.cfg.Cameras {
+		if cam.Enabled {
+			numCameras++
+		}
+	}
+
+	freeBytes, err := stream.DiskFreeBytes(a.cfg.RecordingsDir)
+	if err != nil {
+		a.logger.Printf("[recording] check disk space failed: %v", err)
+		dialog.ShowError(fmt.Errorf(i18n.T("disk_check_error"), err), a.window)
+		// Proceed anyway so a system error doesn't completely block recording
+		a.proceedWithRecording(gridW, gridH, fps, cols, rows, numCameras)
+		return
+	}
+
+	availableMins := stream.EstimateAvailableMinutes(freeBytes, gridW, gridH, fps, numCameras)
+	a.logger.Printf("[recording] disk space check: freeBytes=%d, estimated_mins=%.2f", freeBytes, availableMins)
+
+	if availableMins < 1.0 {
+		a.showDiskSpaceBlocked(func() {
+			a.changeRecordingsDirAndRetry()
+		})
+		return
+	} else if availableMins < 15.0 {
+		a.showDiskSpaceWarning(availableMins, func() {
+			a.proceedWithRecording(gridW, gridH, fps, cols, rows, numCameras)
+		}, func() {
+			a.changeRecordingsDirAndRetry()
+		})
+		return
+	}
+
+	a.proceedWithRecording(gridW, gridH, fps, cols, rows, numCameras)
+}
+
+func (a *App) proceedWithRecording(gridW, gridH, fps, cols, rows, numCameras int) {
 	// Find/resolve recorder
 	var ffmpegPath string
 	var err error
@@ -851,7 +901,6 @@ func (a *App) startRecording() {
 
 	a.mu.Lock()
 	a.isRecording = true
-	// Store recorder in a closure-captured variable
 	a.mu.Unlock()
 
 	a.recordStart = time.Now()
@@ -866,6 +915,12 @@ func (a *App) startRecording() {
 	a.recordTimer = time.NewTicker(time.Second)
 	go func() {
 		for range a.recordTimer.C {
+			a.mu.Lock()
+			recording := a.isRecording
+			a.mu.Unlock()
+			if !recording {
+				return
+			}
 			elapsed := time.Since(a.recordStart).Truncate(time.Second)
 			fyne.Do(func() {
 				a.recordBtn.SetText(i18n.T("btn_stop_with_time", elapsed))
@@ -876,6 +931,225 @@ func (a *App) startRecording() {
 
 	// Start composite record loop
 	go a.compositeRecordLoop(rec, cols, rows, gridW, gridH, fps)
+
+	// Start live disk monitoring
+	a.startDiskMonitor(gridW, gridH, fps, numCameras)
+}
+
+func (a *App) showDiskSpaceWarning(availableMinutes float64, onProceed func(), onChangeDir func()) {
+	var d dialog.Dialog
+
+	msg := fmt.Sprintf(i18n.T("disk_warning_msg"), availableMinutes)
+	text := widget.NewLabel(msg)
+
+	changeBtn := widget.NewButton(i18n.T("disk_btn_change_dir"), func() {
+		fyne.Do(func() {
+			d.Hide()
+		})
+		onChangeDir()
+	})
+	proceedBtn := widget.NewButton(i18n.T("disk_btn_continue"), func() {
+		fyne.Do(func() {
+			d.Hide()
+		})
+		onProceed()
+	})
+	cancelBtn := widget.NewButton(i18n.T("disk_btn_cancel"), func() {
+		fyne.Do(func() {
+			d.Hide()
+		})
+	})
+
+	proceedBtn.Importance = widget.WarningImportance
+
+	buttons := container.NewHBox(
+		layout.NewSpacer(),
+		changeBtn,
+		proceedBtn,
+		cancelBtn,
+		layout.NewSpacer(),
+	)
+
+	content := container.NewVBox(
+		text,
+		widget.NewSeparator(),
+		buttons,
+	)
+
+	d = dialog.NewCustomWithoutButtons(
+		i18n.T("disk_warning_title"),
+		content,
+		a.window,
+	)
+	d.Show()
+}
+
+func (a *App) showDiskSpaceBlocked(onChangeDir func()) {
+	var d dialog.Dialog
+
+	msg := i18n.T("disk_blocked_msg")
+	text := widget.NewLabel(msg)
+
+	changeBtn := widget.NewButton(i18n.T("disk_btn_change_dir"), func() {
+		fyne.Do(func() {
+			d.Hide()
+		})
+		onChangeDir()
+	})
+	cancelBtn := widget.NewButton(i18n.T("disk_btn_cancel"), func() {
+		fyne.Do(func() {
+			d.Hide()
+		})
+	})
+
+	buttons := container.NewHBox(
+		layout.NewSpacer(),
+		changeBtn,
+		cancelBtn,
+		layout.NewSpacer(),
+	)
+
+	content := container.NewVBox(
+		text,
+		widget.NewSeparator(),
+		buttons,
+	)
+
+	d = dialog.NewCustomWithoutButtons(
+		i18n.T("disk_blocked_title"),
+		content,
+		a.window,
+	)
+	d.Show()
+}
+
+func (a *App) changeRecordingsDirAndRetry() {
+	dialog.ShowFolderOpen(func(uri fyne.ListableURI, err error) {
+		if err != nil || uri == nil {
+			return
+		}
+		a.mu.Lock()
+		a.cfg.RecordingsDir = uri.Path()
+		_ = config.Save(*a.cfg, a.cfgPath)
+		a.mu.Unlock()
+
+		// Re-trigger the startRecording() check flow
+		a.startRecording()
+	}, a.window)
+}
+
+func (a *App) startDiskMonitor(gridW, gridH, fps, numCameras int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	a.initDiskBanner()
+
+	a.diskMonitorStop = make(chan struct{})
+	stopChan := a.diskMonitorStop
+
+	go func() {
+		ticker := time.NewTicker(60 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopChan:
+				fyne.Do(func() {
+					if a.diskBanner != nil {
+						a.diskBanner.Hide()
+					}
+				})
+				return
+			case <-ticker.C:
+				freeBytes, err := stream.DiskFreeBytes(a.cfg.RecordingsDir)
+				if err != nil {
+					a.logger.Printf("[disk monitor] check failed: %v", err)
+					continue
+				}
+				mins := stream.EstimateAvailableMinutes(freeBytes, gridW, gridH, fps, numCameras)
+				fyne.Do(func() {
+					a.mu.Lock()
+					recording := a.isRecording
+					a.mu.Unlock()
+					if !recording {
+						if a.diskBanner != nil {
+							a.diskBanner.Hide()
+						}
+						return
+					}
+
+					if mins < 15.0 {
+						a.updateDiskBanner(mins)
+						if a.diskBanner != nil {
+							a.diskBanner.Show()
+						}
+					} else {
+						if a.diskBanner != nil {
+							a.diskBanner.Hide()
+						}
+					}
+
+					if mins <= 0 {
+						a.stopRecording()
+						dialog.ShowError(fmt.Errorf(i18n.T("disk_auto_stop_msg")), a.window)
+					}
+				})
+			}
+		}
+	}()
+}
+
+func (a *App) stopDiskMonitor() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.diskMonitorStop != nil {
+		close(a.diskMonitorStop)
+		a.diskMonitorStop = nil
+	}
+	if a.diskBanner != nil {
+		a.diskBanner.Hide()
+	}
+}
+
+func (a *App) initDiskBanner() {
+	if a.diskBanner != nil {
+		return
+	}
+
+	a.diskBannerBg = canvas.NewRectangle(color.RGBA{R: 230, G: 126, B: 34, A: 220})
+	a.diskBannerBg.CornerRadius = 4
+	a.diskBannerText = canvas.NewText("", color.White)
+	a.diskBannerText.TextStyle = fyne.TextStyle{Bold: true}
+	a.diskBannerText.Alignment = fyne.TextAlignCenter
+	a.diskBannerText.TextSize = 14
+
+	textContainer := container.NewPadded(a.diskBannerText)
+	bannerStack := container.NewStack(a.diskBannerBg, textContainer)
+	marginContainer := container.NewPadded(bannerStack)
+
+	a.diskBanner = container.NewBorder(
+		nil, nil, nil,
+		container.NewVBox(marginContainer),
+	)
+	a.diskBanner.Hide()
+
+	if a.gridContainer != nil {
+		a.gridContainer.Add(a.diskBanner)
+	}
+}
+
+func (a *App) updateDiskBanner(minutes float64) {
+	if a.diskBannerText == nil || a.diskBannerBg == nil {
+		return
+	}
+	if minutes < 3.0 {
+		a.diskBannerBg.FillColor = color.RGBA{R: 231, G: 76, B: 60, A: 220} // Red
+		a.diskBannerText.Text = fmt.Sprintf(i18n.T("disk_live_critical"), minutes)
+	} else {
+		a.diskBannerBg.FillColor = color.RGBA{R: 230, G: 126, B: 34, A: 220} // Orange
+		a.diskBannerText.Text = fmt.Sprintf(i18n.T("disk_live_warning"), minutes)
+	}
+	a.diskBannerBg.Refresh()
+	a.diskBannerText.Refresh()
 }
 
 func (a *App) compositeRecordLoop(rec *stream.Recorder, cols, rows, gridW, gridH, fps int) {
@@ -920,6 +1194,8 @@ func (a *App) stopRecording() {
 	}
 	a.isRecording = false
 	a.mu.Unlock()
+
+	a.stopDiskMonitor()
 
 	if a.recordTimer != nil {
 		a.recordTimer.Stop()
@@ -1633,6 +1909,39 @@ func (a *App) statusLoop() {
 				running = false
 			}
 			panel.SetStatus(running, state.LastError != "")
+
+			// Check for USB bandwidth error (exit status 228, No space left on device, or ENOSPC)
+			if state.LastError != "" && (strings.Contains(state.LastError, "exit status 228") || 
+				strings.Contains(strings.ToLower(state.LastError), "no space left on device") || 
+				strings.Contains(strings.ToLower(state.LastError), "enospc")) {
+				a.mu.Lock()
+				shown := a.shownUSBError[camID]
+				if !shown {
+					a.shownUSBError[camID] = true
+					a.mu.Unlock()
+
+					// Get camera name
+					camName := camID
+					for _, c := range a.cfg.Cameras {
+						if c.ID == camID {
+							camName = c.Name
+							break
+						}
+					}
+					
+					// Show detailed warning popup
+					fyne.Do(func() {
+						a.showUSBBandwidthErrorDialog(camName)
+					})
+				} else {
+					a.mu.Unlock()
+				}
+			} else if state.LastError == "" || state.Running {
+				// Reset error shown flag if camera starts working or error is cleared
+				a.mu.Lock()
+				delete(a.shownUSBError, camID)
+				a.mu.Unlock()
+			}
 		}
 
 		runningWebcams := 0
@@ -1667,6 +1976,11 @@ func (a *App) statusLoop() {
 			}
 		})
 	}
+}
+
+func (a *App) showUSBBandwidthErrorDialog(cameraName string) {
+	msg := fmt.Sprintf(i18n.T("usb_bandwidth_error_msg"), cameraName)
+	dialog.ShowInformation(i18n.T("usb_bandwidth_error_title"), msg, a.window)
 }
 
 func openPath(target string) {
