@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"nystavision/internal/logging"
@@ -58,10 +59,14 @@ func (p *PostProcessor) Process(
 	timestamp := time.Now().Format("20060102_150405")
 
 	var files []string
+	var filesMu sync.Mutex
 	total := len(segments) + 1 // N cameras + 1 general
 	done := 0
+	var doneMu sync.Mutex
 
 	report := func() {
+		doneMu.Lock()
+		defer doneMu.Unlock()
 		if progress != nil {
 			select {
 			case progress <- float64(done) / float64(total):
@@ -70,64 +75,29 @@ func (p *PostProcessor) Process(
 		}
 	}
 
+	var wg sync.WaitGroup
+
 	// Process each camera via crop
 	for _, seg := range segments {
-		if ctx.Err() != nil {
-			return ProcessResult{Err: ctx.Err()}
-		}
+		wg.Add(1)
+		go func(seg CameraSegment) {
+			defer wg.Done()
+			if ctx.Err() != nil {
+				return
+			}
 
-		safeName := sanitizeFilename(seg.Name)
-		outFile := filepath.Join(outDir, fmt.Sprintf("%s_%s.mp4", safeName, timestamp))
+			safeName := sanitizeFilename(seg.Name)
+			outFile := filepath.Join(outDir, fmt.Sprintf("%s_%s.mp4", safeName, timestamp))
 
-		cropFilter := fmt.Sprintf("crop=%d:%d:%d:%d", seg.W, seg.H, seg.X, seg.Y)
-		drawtextFilter := fmt.Sprintf(`drawtext=text='%%{pts\:localtime\:%d\:%%Y-%%m-%%d %%H\\\:%%M\\\:%%S}':fontcolor=white:fontsize=24:box=1:boxcolor=black@0.5:boxborderw=5:x=w-tw-10:y=h-th-10`, startTime.Unix())
-		vfFilter := fmt.Sprintf("%s,%s", cropFilter, drawtextFilter)
+			cropFilter := fmt.Sprintf("crop=%d:%d:%d:%d", seg.W, seg.H, seg.X, seg.Y)
+			drawtextFilter := fmt.Sprintf(`drawtext=text='%%{pts\:localtime\:%d\:%%Y-%%m-%%d %%H\\\:%%M\\\:%%S}':fontcolor=white:fontsize=24:box=1:boxcolor=black@0.5:boxborderw=5:x=w-tw-10:y=h-th-10`, startTime.Unix())
+			vfFilter := fmt.Sprintf("%s,%s", cropFilter, drawtextFilter)
 
-		args := []string{
-			"-hide_banner",
-			"-loglevel", "warning",
-			"-i", compositePath,
-			"-vf", vfFilter,
-			"-c:v", "libx264",
-			"-preset", "fast",
-			"-crf", "23",
-			"-pix_fmt", "yuv420p",
-			"-y",
-			outFile,
-		}
-
-		cmd := exec.CommandContext(ctx, ffmpegPath, args...)
-		setHideWindow(cmd)
-
-		stderr, _ := cmd.StderrPipe()
-		if err := cmd.Start(); err != nil {
-			p.logger.Printf("[post_processor] failed to start ffmpeg crop for %s: %v", seg.Name, err)
-			continue
-		}
-
-		if stderr != nil {
-			go func() {
-				buf := make([]byte, 4096)
-				for {
-					n, err := stderr.Read(buf)
-					if n > 0 {
-						p.logger.Printf("[post_processor] ffmpeg: %s", strings.TrimSpace(string(buf[:n])))
-					}
-					if err != nil {
-						return
-					}
-				}
-			}()
-		}
-
-		if err := cmd.Wait(); err != nil {
-			p.logger.Printf("[post_processor] ffmpeg crop with timestamp error for %s: %v. Retrying without timestamp...", seg.Name, err)
-			// Fallback: Crop without drawtext
-			fallbackArgs := []string{
+			args := []string{
 				"-hide_banner",
 				"-loglevel", "warning",
 				"-i", compositePath,
-				"-vf", cropFilter,
+				"-vf", vfFilter,
 				"-c:v", "libx264",
 				"-preset", "fast",
 				"-crf", "23",
@@ -135,25 +105,78 @@ func (p *PostProcessor) Process(
 				"-y",
 				outFile,
 			}
-			cmdFallback := exec.CommandContext(ctx, ffmpegPath, fallbackArgs...)
-			setHideWindow(cmdFallback)
-			if errFallback := cmdFallback.Run(); errFallback != nil {
-				p.logger.Printf("[post_processor] fallback crop error for %s: %v", seg.Name, errFallback)
-			} else {
-				files = append(files, outFile)
-				p.logger.Printf("[post_processor] saved %s (without timestamp)", outFile)
-			}
-		} else {
-			files = append(files, outFile)
-			p.logger.Printf("[post_processor] saved %s", outFile)
-		}
 
-		done++
-		report()
+			cmd := exec.CommandContext(ctx, ffmpegPath, args...)
+			setHideWindow(cmd)
+
+			stderr, _ := cmd.StderrPipe()
+			if err := cmd.Start(); err != nil {
+				p.logger.Printf("[post_processor] failed to start ffmpeg crop for %s: %v", seg.Name, err)
+				return
+			}
+
+			if stderr != nil {
+				go func() {
+					buf := make([]byte, 4096)
+					for {
+						n, err := stderr.Read(buf)
+						if n > 0 {
+							p.logger.Printf("[post_processor] ffmpeg: %s", strings.TrimSpace(string(buf[:n])))
+						}
+						if err != nil {
+							return
+						}
+					}
+				}()
+			}
+
+			if err := cmd.Wait(); err != nil {
+				p.logger.Printf("[post_processor] ffmpeg crop with timestamp error for %s: %v. Retrying without timestamp...", seg.Name, err)
+				// Fallback: Crop without drawtext
+				fallbackArgs := []string{
+					"-hide_banner",
+					"-loglevel", "warning",
+					"-i", compositePath,
+					"-vf", cropFilter,
+					"-c:v", "libx264",
+					"-preset", "fast",
+					"-crf", "23",
+					"-pix_fmt", "yuv420p",
+					"-y",
+					outFile,
+				}
+				cmdFallback := exec.CommandContext(ctx, ffmpegPath, fallbackArgs...)
+				setHideWindow(cmdFallback)
+				if errFallback := cmdFallback.Run(); errFallback != nil {
+					p.logger.Printf("[post_processor] fallback crop error for %s: %v", seg.Name, errFallback)
+				} else {
+					filesMu.Lock()
+					files = append(files, outFile)
+					filesMu.Unlock()
+					p.logger.Printf("[post_processor] saved %s (without timestamp)", outFile)
+				}
+			} else {
+				filesMu.Lock()
+				files = append(files, outFile)
+				filesMu.Unlock()
+				p.logger.Printf("[post_processor] saved %s", outFile)
+			}
+
+			doneMu.Lock()
+			done++
+			doneMu.Unlock()
+			report()
+		}(seg)
 	}
 
 	// Save general composite with timestamp overlay using ffmpeg drawtext
-	if ctx.Err() == nil {
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if ctx.Err() != nil {
+			return
+		}
+
 		outFile := filepath.Join(outDir, fmt.Sprintf("Genel_%s.mp4", timestamp))
 		drawtextFilter := fmt.Sprintf(`drawtext=text='%%{pts\:localtime\:%d\:%%Y-%%m-%%d %%H\\\:%%M\\\:%%S}':fontcolor=white:fontsize=24:box=1:boxcolor=black@0.5:boxborderw=5:x=w-tw-10:y=h-th-10`, startTime.Unix())
 		args := []string{
@@ -186,16 +209,25 @@ func (p *PostProcessor) Process(
 			if err2 := cmd2.Run(); err2 != nil {
 				p.logger.Printf("[post_processor] copy fallback error: %v", err2)
 			} else {
+				filesMu.Lock()
 				files = append(files, outFile)
+				filesMu.Unlock()
 			}
 		} else {
+			filesMu.Lock()
 			files = append(files, outFile)
+			filesMu.Unlock()
 			p.logger.Printf("[post_processor] saved general %s", outFile)
 		}
 
+		doneMu.Lock()
 		done++
+		doneMu.Unlock()
 		report()
-	}
+	}()
+
+	// Wait for all ffmpeg extractions to finish
+	wg.Wait()
 
 	if len(files) == 0 {
 		return ProcessResult{OutputDir: outDir, Files: files, Err: fmt.Errorf("no video files could be processed (FFmpeg may have exited with errors or not been found)")}

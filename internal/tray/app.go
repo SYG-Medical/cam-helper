@@ -87,6 +87,10 @@ type App struct {
 	diskBannerText  *canvas.Text
 	diskMonitorStop chan struct{}
 
+	perfBanner      *fyne.Container
+	perfBannerBg    *canvas.Rectangle
+	perfBannerText  *canvas.Text
+
 	shownUSBError map[string]bool
 }
 
@@ -939,6 +943,9 @@ func (a *App) startRecording() {
 	}
 	if maxFPS > 0 {
 		fps = maxFPS
+		if fps > 60 {
+			fps = 60 // Cap recording to 60fps to prevent CPU overload and lag during recording
+		}
 	}
 
 	gridW := cols * cellW
@@ -1258,11 +1265,62 @@ func (a *App) updateDiskBanner(minutes float64) {
 	a.diskBannerText.Refresh()
 }
 
-func (a *App) compositeRecordLoop(rec *stream.Recorder, cols, rows, gridW, gridH, fps int) {
-	ticker := time.NewTicker(time.Second / time.Duration(fps))
+func (a *App) hidePerfBanner() {
+	if a.perfBanner != nil {
+		a.perfBanner.Hide()
+	}
+}
+
+func (a *App) initPerfBanner() {
+	if a.perfBanner != nil {
+		return
+	}
+
+	a.perfBannerBg = canvas.NewRectangle(color.RGBA{R: 231, G: 76, B: 60, A: 220}) // Red
+	a.perfBannerBg.CornerRadius = 4
+	a.perfBannerText = canvas.NewText("", color.White)
+	a.perfBannerText.TextStyle = fyne.TextStyle{Bold: true}
+	a.perfBannerText.Alignment = fyne.TextAlignCenter
+	a.perfBannerText.TextSize = 14
+
+	textContainer := container.NewPadded(a.perfBannerText)
+	bannerStack := container.NewStack(a.perfBannerBg, textContainer)
+	marginContainer := container.NewPadded(bannerStack)
+
+	a.perfBanner = container.NewBorder(
+		container.NewVBox(marginContainer), // Top placement for performance warning
+		nil, nil, nil,
+	)
+	a.perfBanner.Hide()
+
+	if a.gridContainer != nil {
+		a.gridContainer.Add(a.perfBanner)
+	}
+}
+
+func (a *App) updatePerfBanner(fps int) {
+	if a.perfBannerText == nil || a.perfBannerBg == nil {
+		return
+	}
+	a.perfBannerText.Text = fmt.Sprintf(i18n.T("perf_warning_msg"), fps)
+	a.perfBannerBg.Refresh()
+	a.perfBannerText.Refresh()
+}
+
+func (a *App) compositeRecordLoop(rec *stream.Recorder, cols, rows, gridW, gridH, targetFps int) {
+	currentFps := targetFps
+	ticker := time.NewTicker(time.Second / time.Duration(currentFps))
 	defer ticker.Stop()
 
+	fyne.Do(func() {
+		a.initPerfBanner()
+	})
+
+	lagCounter := 0
+
 	for range ticker.C {
+		start := time.Now()
+
 		a.mu.Lock()
 		recording := a.isRecording
 		a.mu.Unlock()
@@ -1309,6 +1367,45 @@ func (a *App) compositeRecordLoop(rec *stream.Recorder, cols, rows, gridW, gridH
 
 		composite := stream.ComposeGridFrame(frames, a.cameraOrder, cols, rows, gridW, gridH)
 		rec.WriteFrame(composite)
+
+		elapsed := time.Since(start)
+		frameDuration := time.Second / time.Duration(currentFps)
+
+		// Allow a 15% margin of error for GC spikes
+		if elapsed > frameDuration+frameDuration/6 {
+			lagCounter++
+		} else {
+			if lagCounter > 0 {
+				lagCounter--
+			}
+		}
+
+		// If lagged significantly for many frames
+		if lagCounter > 30 && currentFps > 15 {
+			// Calculate the realistic max FPS the system can handle right now
+			maxPossibleFps := int(time.Second / elapsed)
+			newFps := maxPossibleFps - 2 // Give a little headroom
+			
+			if newFps < 15 {
+				newFps = 15 // Absolute minimum FPS fallback
+			}
+			
+			// Ensure it always drops by at least 5 FPS to avoid getting stuck
+			if newFps >= currentFps {
+				newFps = currentFps - 5
+			}
+			
+			currentFps = newFps
+			ticker.Reset(time.Second / time.Duration(currentFps))
+			lagCounter = 0
+			fyne.Do(func() {
+				a.updatePerfBanner(currentFps)
+				if a.perfBanner != nil {
+					a.perfBanner.Show()
+				}
+			})
+			a.logger.Printf("[recording] System lag detected. Dynamically dropped recording composition to %d fps", currentFps)
+		}
 	}
 }
 
@@ -1322,6 +1419,10 @@ func (a *App) stopRecording() {
 	a.mu.Unlock()
 
 	a.stopDiskMonitor()
+	
+	fyne.Do(func() {
+		a.hidePerfBanner()
+	})
 
 	if a.recordTimer != nil {
 		a.recordTimer.Stop()

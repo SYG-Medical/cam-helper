@@ -94,7 +94,7 @@ func (r *Recorder) Start(width, height, fps int) error {
 		"-r", fmt.Sprintf("%d", fps),
 		"-i", "pipe:0",
 		"-c:v", "libx264",
-		"-preset", "fast",
+		"-preset", "ultrafast",
 		"-crf", "23",
 		"-pix_fmt", "yuv420p",
 		"-y",
@@ -160,34 +160,47 @@ func (r *Recorder) frameWriter(ctx context.Context) {
 	fps := r.fps
 	r.mu.Unlock()
 
-	ticker := time.NewTicker(time.Second / time.Duration(fps))
-	defer ticker.Stop()
+	frameDuration := time.Second / time.Duration(fps)
+	nextTick := time.Now().Add(frameDuration)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			r.frameMu.Lock()
-			frame := r.lastFrame
-			r.frameMu.Unlock()
+		default:
+		}
 
-			if frame == nil {
-				continue
-			}
+		now := time.Now()
+		if now.Before(nextTick) {
+			time.Sleep(nextTick.Sub(now))
+		}
+		
+		// If we are falling severely behind (e.g. more than 10 frames), jump forward to prevent massive queue
+		if now.Sub(nextTick) > frameDuration*10 {
+			nextTick = now
+		}
 
-			r.mu.Lock()
-			stdin := r.stdin
-			r.mu.Unlock()
+		nextTick = nextTick.Add(frameDuration)
 
-			if stdin == nil {
-				return
-			}
+		r.frameMu.Lock()
+		frame := r.lastFrame
+		r.frameMu.Unlock()
 
-			if _, err := stdin.Write(frame.Pix); err != nil {
-				r.logger.Printf("[recorder] frame write error: %v", err)
-				return
-			}
+		if frame == nil {
+			continue
+		}
+
+		r.mu.Lock()
+		stdin := r.stdin
+		r.mu.Unlock()
+
+		if stdin == nil {
+			return
+		}
+
+		if _, err := stdin.Write(frame.Pix); err != nil {
+			r.logger.Printf("[recorder] frame write error: %v", err)
+			return
 		}
 	}
 }
