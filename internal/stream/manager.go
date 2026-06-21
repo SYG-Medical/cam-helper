@@ -26,6 +26,11 @@ import (
 	"nystavision/internal/logging"
 )
 
+var (
+	ErrDeviceNotFound = errors.New("device not found")
+	ErrDeviceIOError  = errors.New("I/O error (device might be in use)")
+)
+
 type State struct {
 	Running      bool
 	LastError    string
@@ -227,7 +232,7 @@ func (m *Manager) supervise(ctx context.Context) {
 		// Still attach stderr logs
 		stderr, err := ffmpegCmd.StderrPipe()
 		if err == nil {
-			go scanPipe(fmt.Sprintf("[%s] ffmpeg stderr", m.cam.Name), stderr, m.logger)
+			go m.scanStderr(stderr)
 		}
 
 		m.logger.Printf("[%s] starting ffmpeg: %s", m.cam.Name, strings.Join(ffmpegCmd.Args, " "))
@@ -251,14 +256,37 @@ func (m *Manager) supervise(ctx context.Context) {
 			<-ffmpegDone
 			return
 		case err := <-ffmpegDone:
-			exitErr = fmt.Errorf("ffmpeg exited: %w", err)
+			// Check if we captured a specific error from stderr
+			m.mu.Lock()
+			capturedErrStr := m.state.LastError
+			m.mu.Unlock()
+
+			if strings.Contains(capturedErrStr, "Could not find video device") || errors.Is(err, ErrDeviceNotFound) {
+				exitErr = ErrDeviceNotFound
+			} else if strings.Contains(capturedErrStr, "I/O error") || strings.Contains(capturedErrStr, "Device or resource busy") || errors.Is(err, ErrDeviceIOError) {
+				exitErr = ErrDeviceIOError
+			} else if err != nil {
+				exitErr = fmt.Errorf("ffmpeg exited: %w", err)
+			}
 		}
 
 		m.mu.Lock()
 		m.restartCount++
 		m.mu.Unlock()
+		
 		m.recordError(exitErr)
-		if !sleepOrDone(ctx, 5*time.Second) {
+
+		// Constant frequent retry for better user experience when reconnecting
+		retryWait := 3 * time.Second
+		if errors.Is(exitErr, ErrDeviceNotFound) {
+			m.logger.Printf("[%s] Device not found, retrying in %v...", m.cam.Name, retryWait)
+		} else if errors.Is(exitErr, ErrDeviceIOError) {
+			m.logger.Printf("[%s] I/O error, device might be in use. Retrying in %v...", m.cam.Name, retryWait)
+		} else {
+			retryWait = 5 * time.Second
+		}
+
+		if !sleepOrDone(ctx, retryWait) {
 			return
 		}
 	}
@@ -267,11 +295,10 @@ func (m *Manager) supervise(ctx context.Context) {
 func (m *Manager) preparePipeline(ctx context.Context) (*exec.Cmd, error) {
 	m.mu.Lock()
 	isWebcam := m.cam.Type == "webcam"
-	useMax := m.globalCfg.UseMaxSupported
 	m.mu.Unlock()
 
 	if isWebcam {
-		m.applyBestCapability(ctx, useMax)
+		m.applyBestCapability(ctx)
 	}
 
 	ffmpegCmd, err := m.buildFFmpegCommand(ctx)
@@ -381,8 +408,6 @@ func (m *Manager) buildWebcamArgs(cam config.CameraSource) []string {
 		args = append(args, "-f", "v4l2")
 		if activeFormat != "" {
 			args = append(args, "-input_format", activeFormat)
-		} else {
-			args = append(args, "-input_format", "mjpeg") // Force MJPEG for high FPS
 		}
 		args = append(args,
 			"-framerate", fmt.Sprintf("%d", activeFPS),
@@ -543,7 +568,36 @@ func attachLogs(prefix string, cmd *exec.Cmd, logger *logging.Logger) {
 func scanPipe(prefix string, r io.Reader, logger *logging.Logger) {
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
-		logger.Printf("%s: %s", prefix, scanner.Text())
+		text := scanner.Text()
+		
+		// Suppress cosmetic warnings
+		if strings.Contains(text, "deprecated pixel format used") {
+			continue
+		}
+		
+		logger.Printf("%s: %s", prefix, text)
+	}
+}
+
+func (m *Manager) scanStderr(r io.Reader) {
+	scanner := bufio.NewScanner(r)
+	prefix := fmt.Sprintf("[%s] ffmpeg stderr", m.cam.Name)
+	for scanner.Scan() {
+		text := scanner.Text()
+		
+		// Suppress cosmetic warnings
+		if strings.Contains(text, "deprecated pixel format used") {
+			continue
+		}
+		
+		// Capture critical errors to state so supervise() can read them on exit
+		if strings.Contains(text, "Could not find video device") {
+			m.recordError(ErrDeviceNotFound)
+		} else if strings.Contains(text, "I/O error") || strings.Contains(text, "Device or resource busy") {
+			m.recordError(ErrDeviceIOError)
+		}
+
+		m.logger.Printf("%s: %s", prefix, text)
 	}
 }
 
@@ -855,7 +909,7 @@ type CameraCapability struct {
 	VCodec      string
 }
 
-func (m *Manager) applyBestCapability(ctx context.Context, useMax bool) {
+func (m *Manager) applyBestCapability(ctx context.Context) {
 	ffmpegPath, err := m.resolveFFmpegPath()
 	if err != nil {
 		m.logger.Printf("[%s] failed to resolve ffmpeg path for capability query: %v", m.cam.Name, err)
@@ -873,13 +927,51 @@ func (m *Manager) applyBestCapability(ctx context.Context, useMax bool) {
 		return
 	}
 
-	caps, err := queryCapabilities(ctx, ffmpegPath, device, m.logger)
-	if err != nil {
-		m.logger.Printf("[%s] failed to query supported capabilities: %v, using default", m.cam.Name, err)
+	m.mu.Lock()
+	pf := m.cam.PixelFormat
+	m.mu.Unlock()
+
+	if targetW > 0 && targetH > 0 && targetFPS > 0 && pf != "" {
+		m.logger.Printf("[%s] Using explicit config format: %dx%d @ %d FPS (fmt: %s)", m.cam.Name, targetW, targetH, targetFPS, pf)
+		m.mu.Lock()
+		m.activeW = targetW
+		m.activeH = targetH
+		m.activeFPS = targetFPS
+		m.activeFormat = pf
+		m.mu.Unlock()
 		return
 	}
 
-	best := selectBestCapability(caps, targetW, targetH, targetFPS, useMax)
+	// If Auto mode (0x0), aim for 1280x720 30fps as our baseline search target
+	if targetW == 0 || targetH == 0 || targetFPS == 0 {
+		targetW = 1280
+		targetH = 720
+		targetFPS = 30
+	}
+
+	caps, err := QueryCapabilities(ctx, ffmpegPath, device, m.logger)
+	if err != nil {
+		if strings.Contains(err.Error(), "Could not find video device") {
+			m.logger.Printf("[%s] capability query failed: device not found", m.cam.Name)
+			m.recordError(ErrDeviceNotFound)
+			return
+		}
+		if strings.Contains(err.Error(), "I/O error") || strings.Contains(err.Error(), "Device or resource busy") {
+			m.logger.Printf("[%s] capability query failed: device in use (I/O error or busy)", m.cam.Name)
+			m.recordError(ErrDeviceIOError)
+			return
+		}
+		m.logger.Printf("[%s] failed to query supported capabilities: %v, using default %dx%d", m.cam.Name, err, targetW, targetH)
+		m.mu.Lock()
+		m.activeW = targetW
+		m.activeH = targetH
+		m.activeFPS = targetFPS
+		m.activeFormat = "" // Completely auto, let ffmpeg negotiate
+		m.mu.Unlock()
+		return
+	}
+
+	best := selectBestCapability(caps, targetW, targetH, targetFPS)
 
 	m.mu.Lock()
 	m.activeW = best.Width
@@ -892,12 +984,12 @@ func (m *Manager) applyBestCapability(ctx context.Context, useMax bool) {
 	} else {
 		m.activeFormat = ""
 	}
-	m.logger.Printf("[%s] applied selected capability (useMax=%t): %dx%d @ %d FPS (format: %s)",
-		m.cam.Name, useMax, m.activeW, m.activeH, m.activeFPS, m.activeFormat)
+	m.logger.Printf("[%s] applied selected capability: %dx%d @ %d FPS (format: %s)",
+		m.cam.Name, m.activeW, m.activeH, m.activeFPS, m.activeFormat)
 	m.mu.Unlock()
 }
 
-func queryCapabilities(ctx context.Context, ffmpegPath, device string, logger *logging.Logger) ([]CameraCapability, error) {
+func QueryCapabilities(ctx context.Context, ffmpegPath, device string, logger *logging.Logger) ([]CameraCapability, error) {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
@@ -916,6 +1008,14 @@ func queryCapabilities(ctx context.Context, ffmpegPath, device string, logger *l
 	_ = cmd.Run() // Exit code is expected to be non-zero since input is dummy/incomplete
 
 	output := stderr.String()
+	
+	if strings.Contains(output, "Could not find video device") {
+		return nil, ErrDeviceNotFound
+	}
+	if strings.Contains(output, "I/O error") || strings.Contains(output, "Device or resource busy") {
+		return nil, ErrDeviceIOError
+	}
+
 	if len(output) == 0 {
 		return nil, fmt.Errorf("no output from ffmpeg format query")
 	}
@@ -991,43 +1091,9 @@ func queryCapabilities(ctx context.Context, ffmpegPath, device string, logger *l
 	return caps, nil
 }
 
-func selectBestCapability(caps []CameraCapability, targetW, targetH, targetFPS int, useMax bool) CameraCapability {
+func selectBestCapability(caps []CameraCapability, targetW, targetH, targetFPS int) CameraCapability {
 	if len(caps) == 0 {
 		return CameraCapability{}
-	}
-
-	if useMax {
-		best := caps[0]
-		bestScore := best.Width * best.Height
-		bestFpsScore := int(best.FPS * 10)
-		bestIsMJPEG := (best.VCodec == "mjpeg" || best.PixelFormat == "mjpeg")
-
-		for _, current := range caps[1:] {
-			score := current.Width * current.Height
-			fpsScore := int(current.FPS * 10)
-			isMJPEG := (current.VCodec == "mjpeg" || current.PixelFormat == "mjpeg")
-
-			better := false
-			if score > bestScore {
-				better = true
-			} else if score == bestScore {
-				if fpsScore > bestFpsScore {
-					better = true
-				} else if fpsScore == bestFpsScore {
-					if isMJPEG && !bestIsMJPEG {
-						better = true
-					}
-				}
-			}
-
-			if better {
-				best = current
-				bestScore = score
-				bestFpsScore = fpsScore
-				bestIsMJPEG = isMJPEG
-			}
-		}
-		return best
 	}
 
 	abs := func(x int) int {

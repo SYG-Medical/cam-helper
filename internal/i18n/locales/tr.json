@@ -42,7 +42,9 @@
   "lbl_ip_url": "IP URL",
   "lbl_webcam": "Webcam",
   "lbl_autostart": "Otomatik başlat",
-  "lbl_use_max_supported": "Maksimum Desteklenen Çözünürlük ve FPS Kullan (Global Shutter/HD kameralar için)",
+  "lbl_camera_format": "Format (Çözünürlük ve FPS)",
+  "lbl_format_auto": "Varsayılan (Otomatik)",
+  "lbl_format_loading": "Kamera özellikleri yükleniyor...",
   "lbl_language": "Dil / Language",
   "lbl_recordings_dir": "Kayıt Klasörü",
   "lbl_version": "Versiyon: %s",
@@ -128,5 +130,8 @@
   "disk_live_critical": "🚨 ~%.1f dk kaldı!",
   "disk_auto_stop_msg": "Disk alanı tükendi! Kayıt otomatik olarak durduruldu.",
   "usb_bandwidth_error_title": "⚠️ USB Bant Genişliği Limiti Aşıldı",
-  "usb_bandwidth_error_msg": "%s kamerasını başlatırken 'No space left on device' (USB Bant Genişliği Tıkanıklığı) hatası alındı.\n\nBu hata RAM veya disk alanıyla ilgili değildir. Bilgisayarınızın USB denetleyicisi, bağlı olan tüm kameraların saniyelik veri akışını taşıyamamaktadır.\n\nÇözüm için şunları deneyebilirsiniz:\n1. Kameraları farklı USB portlarına dağıtın (örneğin bazılarını bilgisayarın önüne, bazılarını arkasına veya varsa USB 3.0/mavi portlara takın).\n2. Ayarlar menüsünden kameraların çözünürlüğünü veya FPS değerlerini (örn: 30'dan 15'e) düşürün.\n3. Kameraları bir USB çoklayıcıya (hub) bağladıysanız, çoklayıcıyı iptal edip kameraları doğrudan bilgisayara bağlayın."
+  "usb_bandwidth_error_msg": "%s kamerasını başlatırken 'No space left on device' (USB Bant Genişliği Tıkanıklığı) hatası alındı.\n\nBu hata RAM veya disk alanıyla ilgili değildir. Bilgisayarınızın USB denetleyicisi, bağlı olan tüm kameraların saniyelik veri akışını taşıyamamaktadır.\n\nÇözüm için şunları deneyebilirsiniz:\n1. Kameraları farklı USB portlarına dağıtın (örneğin bazılarını bilgisayarın önüne, bazılarını arkasına veya varsa USB 3.0/mavi portlara takın).\n2. Ayarlar menüsünden kameraların çözünürlüğünü veya FPS değerlerini (örn: 30'dan 15'e) düşürün.\n3. Kameraları bir USB çoklayıcıya (hub) bağladıysanız, çoklayıcıyı iptal edip kameraları doğrudan bilgisayara bağlayın.",
+  "lbl_in_use": "Kamera Kullanımda / Bağlantı Yok",
+  "lbl_not_found": "Kamera Bulunamadı",
+  "lbl_error": "Hata Oluştu"
 }

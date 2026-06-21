@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -75,7 +76,6 @@ type App struct {
 
 	// Recording state
 	isRecording    bool
-	recordTempFile string
 	recordCellW    int
 	recordCellH    int
 	recordCols     int
@@ -460,6 +460,28 @@ func (a *App) showEditCameraDialog(cameraID string) {
 			urlEntry.Text = selectedCam.RTSPURL
 			urlEntry.SetPlaceHolder(i18n.T("placeholder_url"))
 
+			formatSelect := widget.NewSelect([]string{i18n.T("lbl_format_auto")}, nil)
+			formatSelect.SetSelected(i18n.T("lbl_format_auto"))
+
+			var linuxFPSEntry *widget.Entry
+			var accItem *widget.AccordionItem
+			if runtime.GOOS == "linux" {
+				linuxFPSEntry = widget.NewEntry()
+				linuxFPSEntry.SetPlaceHolder("Örn: 60 (Sadece rakam)")
+				if selectedCam.FPS > 0 {
+					linuxFPSEntry.SetText(strconv.Itoa(selectedCam.FPS))
+				}
+				vbox := container.NewVBox(
+					formatSelect,
+					widget.NewLabel("Linux FPS Zorlama:"),
+					linuxFPSEntry,
+				)
+				accItem = widget.NewAccordionItem(i18n.T("lbl_camera_format"), vbox)
+			} else {
+				accItem = widget.NewAccordionItem(i18n.T("lbl_camera_format"), formatSelect)
+			}
+			formatAccordion := widget.NewAccordion(accItem)
+
 			webcamSelect := widget.NewSelect(nil, nil)
 			var wcNames []string
 			wcDevMap := make(map[string]string)
@@ -487,30 +509,90 @@ func (a *App) showEditCameraDialog(cameraID string) {
 				webcamSelect.SetSelected(wcNames[0])
 			}
 
+			var capMap map[string]stream.CameraCapability
+			loadCapabilities := func(deviceName string) {
+				formatSelect.Options = []string{i18n.T("lbl_format_auto"), i18n.T("lbl_format_loading")}
+				formatSelect.SetSelected(i18n.T("lbl_format_auto"))
+				
+				devicePath := wcDevMap[deviceName]
+				if runtime.GOOS == "windows" {
+					devicePath = "video=" + deviceName
+				}
+
+				go func() {
+					caps, err := stream.QueryCapabilities(context.Background(), a.cfg.FFmpegPath, devicePath, a.logger)
+					fyne.Do(func() {
+						options := []string{i18n.T("lbl_format_auto")}
+						capMap = make(map[string]stream.CameraCapability)
+						if err == nil {
+							for _, c := range caps {
+								formatStr := c.PixelFormat
+								if c.VCodec == "mjpeg" {
+									formatStr = "mjpeg"
+								}
+								s := fmt.Sprintf("%dx%d @ %d FPS (%s)", c.Width, c.Height, int(c.FPS), formatStr)
+								if _, exists := capMap[s]; !exists {
+									options = append(options, s)
+									capMap[s] = c
+								}
+							}
+						}
+						formatSelect.Options = options
+						// If the selected camera has saved dimensions, try to select them
+						if selectedCam.Device == wcDevMap[deviceName] && selectedCam.Width > 0 {
+							savedFormatStr := selectedCam.PixelFormat
+							s := fmt.Sprintf("%dx%d @ %d FPS (%s)", selectedCam.Width, selectedCam.Height, selectedCam.FPS, savedFormatStr)
+							if _, ok := capMap[s]; ok {
+								formatSelect.SetSelected(s)
+							}
+						}
+					})
+				}()
+			}
+
+			webcamSelect.OnChanged = func(s string) {
+				if typeSelect.Selected == "webcam" {
+					loadCapabilities(s)
+				}
+			}
+
 			if selectedCam.Type == "rtsp" {
 				urlEntry.Show()
 				webcamSelect.Hide()
+				formatAccordion.Hide()
 			} else {
 				urlEntry.Hide()
 				webcamSelect.Show()
+				formatAccordion.Show()
+				if webcamSelect.Selected != "" {
+					loadCapabilities(webcamSelect.Selected)
+				}
 			}
 
 			typeSelect.OnChanged = func(s string) {
 				if s == "rtsp" {
 					urlEntry.Show()
 					webcamSelect.Hide()
+					formatAccordion.Hide()
 				} else {
 					urlEntry.Hide()
 					webcamSelect.Show()
+					formatAccordion.Show()
+					if webcamSelect.Selected != "" {
+						loadCapabilities(webcamSelect.Selected)
+					}
 				}
 			}
 
-			form := dialog.NewForm(fmt.Sprintf("%s - %s", i18n.T("menu_edit"), selectedCam.Name), i18n.T("btn_save"), i18n.T("btn_cancel"), []*widget.FormItem{
+			formItems := []*widget.FormItem{
 				widget.NewFormItem(i18n.T("lbl_camera_name"), nameEntry),
 				widget.NewFormItem(i18n.T("lbl_type"), typeSelect),
 				widget.NewFormItem(i18n.T("lbl_ip_url"), urlEntry),
 				widget.NewFormItem(i18n.T("lbl_webcam"), webcamSelect),
-			}, func(ok bool) {
+				widget.NewFormItem("", formatAccordion),
+			}
+
+			form := dialog.NewForm(fmt.Sprintf("%s - %s", i18n.T("menu_edit"), selectedCam.Name), i18n.T("btn_save"), i18n.T("btn_cancel"), formItems, func(ok bool) {
 				defer a.refreshCameraDropdowns()
 				if !ok {
 					return
@@ -525,6 +607,30 @@ func (a *App) showEditCameraDialog(cameraID string) {
 				camPtr.RTSPURL = strings.TrimSpace(urlEntry.Text)
 				if camPtr.Type == "webcam" {
 					camPtr.Device = wcDevMap[webcamSelect.Selected]
+					if formatSelect.Selected != i18n.T("lbl_format_auto") && formatSelect.Selected != i18n.T("lbl_format_loading") {
+						if cap, ok := capMap[formatSelect.Selected]; ok {
+							camPtr.Width = cap.Width
+							camPtr.Height = cap.Height
+							camPtr.FPS = int(cap.FPS)
+							if cap.VCodec == "mjpeg" {
+								camPtr.PixelFormat = "mjpeg"
+							} else {
+								camPtr.PixelFormat = cap.PixelFormat
+							}
+						}
+					} else {
+						// Auto/Default selected, reset format overrides
+						camPtr.Width = 0
+						camPtr.Height = 0
+						camPtr.FPS = 0
+						camPtr.PixelFormat = ""
+					}
+
+					if runtime.GOOS == "linux" && linuxFPSEntry != nil && linuxFPSEntry.Text != "" {
+						if customFPS, err := strconv.Atoi(strings.TrimSpace(linuxFPSEntry.Text)); err == nil && customFPS > 0 {
+							camPtr.FPS = customFPS
+						}
+					}
 				}
 				_ = config.Save(*a.cfg, a.cfgPath)
 				a.multiManager.UpdateCamera(*camPtr)
@@ -1166,11 +1272,31 @@ func (a *App) compositeRecordLoop(rec *stream.Recorder, cols, rows, gridW, gridH
 			tempFile, err := rec.Stop()
 			if err != nil {
 				a.logger.Printf("[recording] stop error: %v", err)
+				fyne.Do(func() {
+					dialog.ShowError(fmt.Errorf("recording stop error: %w", err), a.window)
+				})
 				return
 			}
+
 			a.mu.Lock()
-			a.recordTempFile = tempFile
+			cols := a.recordCols
+			rows := a.recordRows
+			cellW := a.recordCellW
+			cellH := a.recordCellH
+			recStart := a.recordStart
+			cameras := make([]config.CameraSource, len(a.cfg.Cameras))
+			copy(cameras, a.cfg.Cameras)
+			cameraOrder := make([]string, len(a.cameraOrder))
+			copy(cameraOrder, a.cameraOrder)
 			a.mu.Unlock()
+
+			// Build segments for each camera
+			segments := buildCameraSegments(cameras, cameraOrder, cols, rows, cellW, cellH)
+
+			// Show patient name dialog
+			fyne.Do(func() {
+				a.showPatientNameDialog(tempFile, segments, recStart)
+			})
 			return
 		}
 
@@ -1208,48 +1334,6 @@ func (a *App) stopRecording() {
 		a.recordBtn.Importance = widget.MediumImportance
 		a.recordBtn.Refresh()
 	})
-
-	// Wait briefly for compositeRecordLoop to stop and set recordTempFile
-	go func() {
-		// Give the record loop time to write the final file
-		time.Sleep(500 * time.Millisecond)
-
-		a.mu.Lock()
-		tempFile := a.recordTempFile
-		cols := a.recordCols
-		rows := a.recordRows
-		cellW := a.recordCellW
-		cellH := a.recordCellH
-		recStart := a.recordStart
-		cameras := make([]config.CameraSource, len(a.cfg.Cameras))
-		copy(cameras, a.cfg.Cameras)
-		cameraOrder := make([]string, len(a.cameraOrder))
-		copy(cameraOrder, a.cameraOrder)
-		a.mu.Unlock()
-
-		if tempFile == "" {
-			a.logger.Printf("[recording] temp file not available yet, waiting...")
-			time.Sleep(2 * time.Second)
-			a.mu.Lock()
-			tempFile = a.recordTempFile
-			a.mu.Unlock()
-		}
-
-		if tempFile == "" {
-			fyne.Do(func() {
-				dialog.ShowError(fmt.Errorf("recording file not available"), a.window)
-			})
-			return
-		}
-
-		// Build segments for each camera
-		segments := buildCameraSegments(cameras, cameraOrder, cols, rows, cellW, cellH)
-
-		// Show patient name dialog
-		fyne.Do(func() {
-			a.showPatientNameDialog(tempFile, segments, recStart)
-		})
-	}()
 }
 
 // buildCameraSegments calculates crop coordinates for each camera in the grid.
@@ -1382,13 +1466,9 @@ func (a *App) showPatientNameDialog(tempFile string, segments []stream.CameraSeg
 }
 
 // --- Settings Dialog ---
-
 func (a *App) showSettingsDialog() {
 	autostartCheck := widget.NewCheck(i18n.T("lbl_autostart"), nil)
 	autostartCheck.SetChecked(a.cfg.AutoStart)
-
-	useMaxCheck := widget.NewCheck(i18n.T("lbl_use_max_supported"), nil)
-	useMaxCheck.SetChecked(a.cfg.UseMaxSupported)
 
 	langOptions := []string{"🇹🇷 Türkçe", "🇬🇧 English", "🇸🇦 العربية"}
 	langMap := map[string]string{
@@ -1475,7 +1555,6 @@ func (a *App) showSettingsDialog() {
 		container.NewBorder(nil, nil, widget.NewLabel(i18n.T("lbl_language")+": "), nil, langSelect),
 		recordingsRow,
 		autostartCheck,
-		useMaxCheck,
 		widget.NewSeparator(),
 		container.NewGridWithColumns(2, configBtn, logsBtn),
 		container.NewHBox(layout.NewSpacer(), versionText),
@@ -1488,8 +1567,6 @@ func (a *App) showSettingsDialog() {
 		a.mu.Lock()
 		a.cfg.AutoStart = autostartCheck.Checked
 		a.cfg.RecordingsDir = recordingsDirEntry.Text
-		useMaxChanged := a.cfg.UseMaxSupported != useMaxCheck.Checked
-		a.cfg.UseMaxSupported = useMaxCheck.Checked
 		_ = config.Save(*a.cfg, a.cfgPath)
 		a.mu.Unlock()
 
@@ -1501,18 +1578,6 @@ func (a *App) showSettingsDialog() {
 
 		if a.multiManager != nil {
 			a.multiManager.UpdateConfig(*a.cfg)
-		}
-
-		if useMaxChanged && a.multiManager != nil {
-			// Restart active webcam streams immediately
-			for _, cam := range a.cfg.Cameras {
-				if cam.Enabled && cam.Type == "webcam" {
-					if a.multiManager.GetState(cam.ID).Running {
-						a.multiManager.StopCamera(cam.ID)
-						_ = a.multiManager.StartCamera(cam.ID)
-					}
-				}
-			}
 		}
 	})
 
@@ -1908,7 +1973,7 @@ func (a *App) statusLoop() {
 			if camID == a.cfg.RTSPServerCamera && a.rtspUIStopped {
 				running = false
 			}
-			panel.SetStatus(running, state.LastError != "")
+			panel.SetStatus(running, state.LastError)
 
 			// Check for USB bandwidth error (exit status 228, No space left on device, or ENOSPC)
 			if state.LastError != "" && (strings.Contains(state.LastError, "exit status 228") || 

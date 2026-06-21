@@ -32,6 +32,7 @@ type CameraSource struct {
 	Height      int    `json:"height"`
 	FPS         int    `json:"fps"`
 	PixelFormat string `json:"pixel_format,omitempty"`
+	DevicePath  string `json:"device_path,omitempty"`
 	Enabled     bool   `json:"enabled"`
 }
 
@@ -50,7 +51,6 @@ type Config struct {
 	Language        string `json:"language"`
 	TutorialShown   bool   `json:"tutorial_shown"`
 	RecordingsDir   string `json:"recordings_dir"`
-	UseMaxSupported bool   `json:"use_max_supported"`
 
 	// Deprecated driver fields — kept for backward compat, not written by Normalize
 	TargetVirtualCamera string `json:"target_virtual_camera,omitempty"`
@@ -83,7 +83,6 @@ func Default() Config {
 		Language:      detectSystemLanguage(),
 		TutorialShown:   false,
 		RecordingsDir:   defaultRecordingsDir(),
-		UseMaxSupported: false,
 		Cameras: []CameraSource{
 			{
 				ID:      "cam-1",

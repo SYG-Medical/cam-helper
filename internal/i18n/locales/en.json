@@ -42,7 +42,9 @@
   "lbl_ip_url": "IP URL",
   "lbl_webcam": "Webcam",
   "lbl_autostart": "Auto Start",
-  "lbl_use_max_supported": "Use Maximum Supported Resolution & FPS (for Global Shutter/HD cameras)",
+  "lbl_camera_format": "Format (Resolution & FPS)",
+  "lbl_format_auto": "Default (Auto)",
+  "lbl_format_loading": "Loading camera features...",
   "lbl_language": "Language",
   "lbl_recordings_dir": "Recordings Folder",
   "lbl_version": "Version: %s",
@@ -128,5 +130,8 @@
   "disk_live_critical": "🚨 ~%.1f min left!",
   "disk_auto_stop_msg": "Disk space exhausted! Recording has been stopped automatically.",
   "usb_bandwidth_error_title": "⚠️ USB Bandwidth Limit Exceeded",
-  "usb_bandwidth_error_msg": "%s camera failed to start with 'No space left on device' (USB Bandwidth Exhaustion) error.\n\nThis error is not related to RAM or disk space. Your computer's USB controller cannot handle the data stream from all connected cameras simultaneously.\n\nTo resolve this:\n1. Distribute the cameras to different USB ports (e.g. plug some to the front, some to the back, or use USB 3.0/blue ports).\n2. Lower the resolution or FPS of the cameras in the Settings menu (e.g. from 30 to 15).\n3. If you are using a USB hub/splitter, disconnect it and plug the cameras directly into separate ports on the computer."
+  "usb_bandwidth_error_msg": "%s camera failed to start with 'No space left on device' (USB Bandwidth Exhaustion) error.\n\nThis error is not related to RAM or disk space. Your computer's USB controller cannot handle the data stream from all connected cameras simultaneously.\n\nTo resolve this:\n1. Distribute the cameras to different USB ports (e.g. plug some to the front, some to the back, or use USB 3.0/blue ports).\n2. Lower the resolution or FPS of the cameras in the Settings menu (e.g. from 30 to 15).\n3. If you are using a USB hub/splitter, disconnect it and plug the cameras directly into separate ports on the computer.",
+  "lbl_in_use": "Camera in Use / Disconnected",
+  "lbl_not_found": "Camera Not Found",
+  "lbl_error": "An Error Occurred"
 }

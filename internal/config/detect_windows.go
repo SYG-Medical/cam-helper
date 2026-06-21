@@ -51,6 +51,8 @@ func DetectWebcams() []CameraSource {
 	scanner := bufio.NewScanner(bytes.NewReader(output))
 	inVideoSection := false
 
+	nameCounts := make(map[string]int)
+
 	for scanner.Scan() {
 		line := scanner.Text()
 
@@ -69,7 +71,9 @@ func DetectWebcams() []CameraSource {
 				lastQuote := strings.LastIndex(line, "\"")
 				if firstQuote != -1 && lastQuote != -1 && firstQuote < lastQuote && len(cameras) > 0 {
 					altName := line[firstQuote+1 : lastQuote]
+					// Windows dshow alternative names start with @device_pnp_ or similar
 					cameras[len(cameras)-1].Device = "video=" + altName
+					cameras[len(cameras)-1].DevicePath = altName
 				}
 				continue
 			}
@@ -83,15 +87,23 @@ func DetectWebcams() []CameraSource {
 					continue
 				}
 
+				// Handle duplicate names by appending a counter
+				nameCounts[name]++
+				displayName := name
+				if count := nameCounts[name]; count > 1 {
+					displayName = fmt.Sprintf("%s (%d)", name, count)
+				}
+
 				cameras = append(cameras, CameraSource{
-					ID:      fmt.Sprintf("webcam-win-%d", idx),
-					Name:    name,
-					Type:    "webcam",
-					Device:  "video=" + name,
-					Width:   1280,
-					Height:  720,
-					FPS:     30,
-					Enabled: true,
+					ID:         fmt.Sprintf("webcam-win-%d", idx),
+					Name:       displayName,
+					Type:       "webcam",
+					Device:     "video=" + name, // Will be overwritten by Alternative name if present
+					DevicePath: name,            // Will be overwritten by Alternative name if present
+					Width:      1280,
+					Height:     720,
+					FPS:        30,
+					Enabled:    true,
 				})
 				idx++
 			}
@@ -131,15 +143,22 @@ func detectWebcamsPowerShell() []CameraSource {
 			continue
 		}
 
+		nameCounts[name]++
+		displayName := name
+		if count := nameCounts[name]; count > 1 {
+			displayName = fmt.Sprintf("%s (%d)", name, count)
+		}
+
 		cameras = append(cameras, CameraSource{
-			ID:      fmt.Sprintf("webcam-win-%d", idx),
-			Name:    name,
-			Type:    "webcam",
-			Device:  "video=" + name,
-			Width:   1280,
-			Height:  720,
-			FPS:     30,
-			Enabled: true,
+			ID:         fmt.Sprintf("webcam-win-%d", idx),
+			Name:       displayName,
+			Type:       "webcam",
+			Device:     "video=" + name,
+			DevicePath: name,
+			Width:      1280,
+			Height:     720,
+			FPS:        30,
+			Enabled:    true,
 		})
 		idx++
 	}

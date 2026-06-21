@@ -3,6 +3,7 @@ package ui
 import (
 	"image"
 	"image/color"
+	"strings"
 	"sync"
 
 	"fyne.io/fyne/v2"
@@ -179,7 +180,8 @@ func (cp *CameraPanel) GetLastFrame() *image.RGBA {
 }
 
 // SetStatus updates the status indicator color and stopped state.
-func (cp *CameraPanel) SetStatus(running bool, hasError bool) {
+func (cp *CameraPanel) SetStatus(running bool, lastError string) {
+	hasError := lastError != ""
 	var c color.Color
 	if running && !hasError {
 		c = color.RGBA{R: 50, G: 200, B: 50, A: 255} // Green
@@ -192,8 +194,21 @@ func (cp *CameraPanel) SetStatus(running bool, hasError bool) {
 		cp.statusDot.FillColor = c
 		cp.statusDot.Refresh()
 
-		if !running {
+		if !running || hasError {
 			cp.makeGrayscale()
+			
+			text := i18n.T("lbl_stopped")
+			if hasError {
+				if strings.Contains(lastError, "I/O error") || strings.Contains(lastError, "Device or resource busy") {
+					text = i18n.T("lbl_in_use")
+				} else if strings.Contains(lastError, "device not found") {
+					text = i18n.T("lbl_not_found")
+				} else {
+					text = i18n.T("lbl_error")
+				}
+			}
+			cp.stoppedText.Text = text
+			
 			cp.stoppedContainer.Show()
 			cp.img.Refresh()
 		} else {
