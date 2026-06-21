@@ -60,6 +60,9 @@ type Config struct {
 	DriverInstaller     string `json:"driver_installer,omitempty"`
 	DriverBridge        string `json:"driver_bridge,omitempty"`
 
+	// Feature flags
+	DisableHardwareAccel bool `json:"disable_hw_accel"`
+
 	// Multi-camera fields
 	Cameras          []CameraSource `json:"cameras"`
 	SavedLayouts     []SavedLayout  `json:"saved_layouts"`

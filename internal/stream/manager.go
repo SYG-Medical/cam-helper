@@ -66,6 +66,15 @@ type Manager struct {
 	lastPreviewTime time.Time
 
 	enableHTTPServer bool // whether this manager should start the HTTP MJPEG server
+
+	// Per-camera recording state. The camera input remains owned by this single
+	// FFmpeg process; recording is added as a second compressed output.
+	recordSession      *RecordingSession
+	recordProfile      HardwareProfile
+	forceRecordEncode  bool
+	currentSegment     int
+	currentSegmentPath string
+	currentSegmentCopy bool
 }
 
 // NewFromCamera creates a Manager for a specific camera source.
@@ -76,6 +85,8 @@ func NewFromCamera(cam config.CameraSource, globalCfg config.Config, logger *log
 		logger:           logger,
 		listeners:        make(map[chan []byte]bool),
 		enableHTTPServer: enableHTTP,
+		recordProfile:    SoftwareHardwareProfile(),
+		currentSegment:   -1,
 	}
 	if enableHTTP {
 		m.startHTTPServer()
@@ -199,6 +210,26 @@ func (m *Manager) UpdateConfig(cfg config.Config) {
 	m.mu.Unlock()
 }
 
+func (m *Manager) SetRecordingSession(session *RecordingSession, profile HardwareProfile) {
+	m.mu.Lock()
+	m.recordSession = session
+	m.recordProfile = profile
+	m.forceRecordEncode = false
+	m.currentSegment = -1
+	m.currentSegmentPath = ""
+	m.currentSegmentCopy = false
+	m.mu.Unlock()
+}
+
+func (m *Manager) ClearRecordingSession() {
+	m.mu.Lock()
+	m.recordSession = nil
+	m.currentSegment = -1
+	m.currentSegmentPath = ""
+	m.currentSegmentCopy = false
+	m.mu.Unlock()
+}
+
 func (m *Manager) supervise(ctx context.Context) {
 	defer m.wg.Done()
 
@@ -212,6 +243,7 @@ func (m *Manager) supervise(ctx context.Context) {
 
 		ffmpegCmd, err := m.preparePipeline(ctx)
 		if err != nil {
+			m.finishCurrentSegment()
 			m.recordError(err)
 			if !sleepOrDone(ctx, 8*time.Second) {
 				return
@@ -228,6 +260,7 @@ func (m *Manager) supervise(ctx context.Context) {
 			continue
 		}
 		go m.forwardFrames(ctx, stdout)
+		stdin, _ := ffmpegCmd.StdinPipe()
 
 		// Still attach stderr logs
 		stderr, err := ffmpegCmd.StderrPipe()
@@ -237,6 +270,7 @@ func (m *Manager) supervise(ctx context.Context) {
 
 		m.logger.Printf("[%s] starting ffmpeg: %s", m.cam.Name, strings.Join(ffmpegCmd.Args, " "))
 		if err := ffmpegCmd.Start(); err != nil {
+			m.finishCurrentSegment()
 			m.recordError(fmt.Errorf("start ffmpeg: %w", err))
 			if !sleepOrDone(ctx, 8*time.Second) {
 				return
@@ -252,10 +286,28 @@ func (m *Manager) supervise(ctx context.Context) {
 		var exitErr error
 		select {
 		case <-ctx.Done():
-			_ = ffmpegCmd.Process.Kill()
-			<-ffmpegDone
+			m.mu.Lock()
+			hasSession := m.recordSession != nil
+			m.mu.Unlock()
+
+			if stdin != nil && hasSession {
+				_, _ = io.WriteString(stdin, "q\n")
+				_ = stdin.Close()
+			} else {
+				// Instant kill for preview streams to prevent UI hanging
+				_ = ffmpegCmd.Process.Kill()
+			}
+
+			select {
+			case <-ffmpegDone:
+			case <-time.After(5 * time.Second):
+				_ = ffmpegCmd.Process.Kill()
+				<-ffmpegDone
+			}
+			m.finishCurrentSegment()
 			return
 		case err := <-ffmpegDone:
+			m.finishCurrentSegment()
 			// Check if we captured a specific error from stderr
 			m.mu.Lock()
 			capturedErrStr := m.state.LastError
@@ -271,9 +323,16 @@ func (m *Manager) supervise(ctx context.Context) {
 		}
 
 		m.mu.Lock()
+		if m.currentSegmentCopy && exitErr != nil {
+			m.forceRecordEncode = true
+			m.logger.Printf("[%s] stream-copy recording failed; next segment will use %s", m.cam.Name, profileDescription(m.recordProfile))
+		}
+		m.mu.Unlock()
+
+		m.mu.Lock()
 		m.restartCount++
 		m.mu.Unlock()
-		
+
 		m.recordError(exitErr)
 
 		// Constant frequent retry for better user experience when reconnecting
@@ -317,18 +376,37 @@ func (m *Manager) buildFFmpegCommand(ctx context.Context) (*exec.Cmd, error) {
 
 	m.mu.Lock()
 	cam := m.cam
+	session := m.recordSession
+	profile := m.recordProfile
+	forceEncode := m.forceRecordEncode
 	m.mu.Unlock()
+
+	var recordPath string
+	recordCopy := false
+	if session != nil {
+		index, path, err := session.BeginSegment(cam.ID, time.Now())
+		if err != nil {
+			return nil, err
+		}
+		recordPath = path
+		recordCopy = cam.Type == "rtsp" && !forceEncode
+		m.mu.Lock()
+		m.currentSegment = index
+		m.currentSegmentPath = path
+		m.currentSegmentCopy = recordCopy
+		m.mu.Unlock()
+	}
 
 	var args []string
 
 	switch cam.Type {
 	case "webcam":
-		args = m.buildWebcamArgs(cam)
+		args = m.buildWebcamArgs(cam, recordPath, profile)
 	default: // "rtsp"
-		args = m.buildRTSPArgs(cam)
+		args = m.buildRTSPArgs(cam, recordPath, profile, recordCopy)
 	}
 
-	cmd := exec.CommandContext(ctx, path, args...)
+	cmd := exec.Command(path, args...)
 	setHideWindow(cmd)
 	return cmd, nil
 }
@@ -365,10 +443,15 @@ func (m *Manager) ActiveFPS() int {
 	return m.activeFPS
 }
 
-func (m *Manager) buildRTSPArgs(cam config.CameraSource) []string {
+func (m *Manager) buildRTSPArgs(cam config.CameraSource, recordPath string, profile HardwareProfile, streamCopy bool) []string {
 	args := []string{
 		"-hide_banner",
 		"-loglevel", "warning",
+	}
+	if recordPath != "" && !streamCopy {
+		args = append(args, profile.InitArgs...)
+	}
+	args = append(args,
 		"-rtsp_transport", "tcp",
 		"-probesize", "100K",
 		"-analyzeduration", "100K",
@@ -376,12 +459,23 @@ func (m *Manager) buildRTSPArgs(cam config.CameraSource) []string {
 		"-flags", "low_delay",
 		"-thread_queue_size", "1024",
 		"-i", cam.RTSPURL,
-		"-an",
+	)
+
+	if recordPath != "" {
+		args = append(args, "-map", "0:v:0", "-an")
+		if streamCopy {
+			args = append(args, "-c:v", "copy")
+		} else {
+			args = appendEncoderArgs(args, profile, "")
+		}
+		args = append(args, "-f", "matroska", "-y", recordPath)
 	}
 
 	w, h := m.PreviewDimensions()
+	fps := m.ActiveFPS()
 	args = append(args,
-		"-vf", fmt.Sprintf("scale=%d:%d,fps=%d", w, h, cam.FPS),
+		"-map", "0:v:0", "-an",
+		"-vf", fmt.Sprintf("scale=%d:%d,fps=%d", w, h, fps),
 		"-pix_fmt", "rgba",
 		"-f", "rawvideo", "-",
 	)
@@ -389,13 +483,18 @@ func (m *Manager) buildRTSPArgs(cam config.CameraSource) []string {
 	return args
 }
 
-func (m *Manager) buildWebcamArgs(cam config.CameraSource) []string {
+func (m *Manager) buildWebcamArgs(cam config.CameraSource, recordPath string, profile HardwareProfile) []string {
 	args := []string{
 		"-hide_banner",
 		"-loglevel", "warning",
+	}
+	if recordPath != "" {
+		args = append(args, profile.InitArgs...)
+	}
+	args = append(args,
 		"-fflags", "nobuffer",
 		"-flags", "low_delay",
-	}
+	)
 
 	m.mu.Lock()
 	activeW := m.activeW
@@ -439,18 +538,43 @@ func (m *Manager) buildWebcamArgs(cam config.CameraSource) []string {
 
 	args = append(args,
 		"-i", cam.Device,
-		"-an",
 	)
+
+	if recordPath != "" {
+		args = append(args, "-map", "0:v:0", "-an")
+		args = appendEncoderArgs(args, profile, "")
+		args = append(args, "-f", "matroska", "-y", recordPath)
+	}
 
 	w, h := m.PreviewDimensions()
 	// Webcam cameras always output rgba rawvideo to stdout for preview
 	args = append(args,
+		"-map", "0:v:0", "-an",
 		"-vf", fmt.Sprintf("scale=%d:%d,fps=%d", w, h, activeFPS),
 		"-pix_fmt", "rgba",
 		"-f", "rawvideo", "-",
 	)
 
 	return args
+}
+
+func (m *Manager) finishCurrentSegment() {
+	m.mu.Lock()
+	session := m.recordSession
+	cameraID := m.cam.ID
+	index := m.currentSegment
+	path := m.currentSegmentPath
+	m.currentSegment = -1
+	m.currentSegmentPath = ""
+	m.mu.Unlock()
+
+	if session == nil || index < 0 {
+		return
+	}
+	session.EndSegment(cameraID, index, time.Now())
+	if info, err := os.Stat(path); err != nil || info.Size() == 0 {
+		_ = os.Remove(path)
+	}
 }
 
 func ResolveFFmpegPath(candidate string) (string, error) {
@@ -505,7 +629,6 @@ func (m *Manager) resolveFFmpegPath() (string, error) {
 	m.mu.Unlock()
 	return ResolveFFmpegPath(candidate)
 }
-
 
 func (m *Manager) recordRunning() {
 	m.mu.Lock()
@@ -569,12 +692,12 @@ func scanPipe(prefix string, r io.Reader, logger *logging.Logger) {
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		text := scanner.Text()
-		
+
 		// Suppress cosmetic warnings
 		if strings.Contains(text, "deprecated pixel format used") {
 			continue
 		}
-		
+
 		logger.Printf("%s: %s", prefix, text)
 	}
 }
@@ -584,17 +707,25 @@ func (m *Manager) scanStderr(r io.Reader) {
 	prefix := fmt.Sprintf("[%s] ffmpeg stderr", m.cam.Name)
 	for scanner.Scan() {
 		text := scanner.Text()
-		
+
 		// Suppress cosmetic warnings
 		if strings.Contains(text, "deprecated pixel format used") {
 			continue
 		}
-		
+
 		// Capture critical errors to state so supervise() can read them on exit
 		if strings.Contains(text, "Could not find video device") {
 			m.recordError(ErrDeviceNotFound)
 		} else if strings.Contains(text, "I/O error") || strings.Contains(text, "Device or resource busy") {
 			m.recordError(ErrDeviceIOError)
+		} else if looksLikeEncoderFailure(text) {
+			m.mu.Lock()
+			if m.recordProfile.Hardware {
+				m.logger.Printf("[%s] hardware encoder failed; falling back to libx264 on reconnect", m.cam.Name)
+				m.recordProfile = SoftwareHardwareProfile()
+				m.forceRecordEncode = true
+			}
+			m.mu.Unlock()
 		}
 
 		m.logger.Printf("%s: %s", prefix, text)
@@ -1008,7 +1139,7 @@ func QueryCapabilities(ctx context.Context, ffmpegPath, device string, logger *l
 	_ = cmd.Run() // Exit code is expected to be non-zero since input is dummy/incomplete
 
 	output := stderr.String()
-	
+
 	if strings.Contains(output, "Could not find video device") {
 		return nil, ErrDeviceNotFound
 	}

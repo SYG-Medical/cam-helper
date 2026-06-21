@@ -168,17 +168,6 @@ func (cp *CameraPanel) UpdateFrame(width, height int, pix []byte) {
 	})
 }
 
-// GetLastFrame returns a copy of the last frame for recording.
-func (cp *CameraPanel) GetLastFrame() *image.RGBA {
-	cp.mu.Lock()
-	defer cp.mu.Unlock()
-	if cp.rgbaImg == nil {
-		return nil
-	}
-	// Return the image directly (caller should not modify)
-	return cp.rgbaImg
-}
-
 // SetStatus updates the status indicator color and stopped state.
 func (cp *CameraPanel) SetStatus(running bool, lastError string) {
 	hasError := lastError != ""
@@ -196,7 +185,7 @@ func (cp *CameraPanel) SetStatus(running bool, lastError string) {
 
 		if !running || hasError {
 			cp.makeGrayscale()
-			
+
 			text := i18n.T("lbl_stopped")
 			if hasError {
 				if strings.Contains(lastError, "I/O error") || strings.Contains(lastError, "Device or resource busy") {
@@ -208,7 +197,7 @@ func (cp *CameraPanel) SetStatus(running bool, lastError string) {
 				}
 			}
 			cp.stoppedText.Text = text
-			
+
 			cp.stoppedContainer.Show()
 			cp.img.Refresh()
 		} else {

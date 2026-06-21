@@ -41,7 +41,8 @@
   "lbl_source": "Source",
   "lbl_ip_url": "IP URL",
   "lbl_webcam": "Webcam",
-  "lbl_autostart": "Auto Start",
+  "lbl_autostart": "Start Automatically on Boot",
+  "lbl_disable_hw_accel": "Disable Hardware Acceleration",
   "lbl_camera_format": "Format (Resolution & FPS)",
   "lbl_format_auto": "Default (Auto)",
   "lbl_format_loading": "Loading camera features...",
@@ -98,6 +99,8 @@
   "record_done_msg": "All videos saved to:\n%s",
   "record_done_open": "Open Folder",
   "record_done_close": "Close",
+  "record_locked_title": "Recording in Progress",
+  "record_locked_msg": "Camera, stream, layout, and recording-folder settings are locked until recording stops.",
 
   "tutorial_skip": "Skip",
   "tutorial_next": "Next",

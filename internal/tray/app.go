@@ -4,7 +4,6 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
-	"image"
 	"image/color"
 	"log"
 	"os"
@@ -75,21 +74,14 @@ type App struct {
 	rtspUIStopped bool
 
 	// Recording state
-	isRecording    bool
-	recordCellW    int
-	recordCellH    int
-	recordCols     int
-	recordRows     int
+	isRecording   bool
+	recordSession *stream.RecordingSession
 
 	// Disk space live monitoring
 	diskBanner      *fyne.Container
 	diskBannerBg    *canvas.Rectangle
 	diskBannerText  *canvas.Text
 	diskMonitorStop chan struct{}
-
-	perfBanner      *fyne.Container
-	perfBannerBg    *canvas.Rectangle
-	perfBannerText  *canvas.Text
 
 	shownUSBError map[string]bool
 }
@@ -163,8 +155,6 @@ func New() (*App, error) {
 	return appObj, nil
 }
 
-
-
 func getCameraOrder(cameras []config.CameraSource) []string {
 	order := make([]string, len(cameras))
 	for i, c := range cameras {
@@ -172,9 +162,6 @@ func getCameraOrder(cameras []config.CameraSource) []string {
 	}
 	return order
 }
-
-
-
 
 func (a *App) setupUI() {
 	a.window.Resize(fyne.NewSize(960, 640))
@@ -256,6 +243,9 @@ func (a *App) buildToolbar() *fyne.Container {
 }
 
 func (a *App) toggleAllStreams() {
+	if a.blockWhileRecording() {
+		return
+	}
 	anyWebcamRunning := false
 	for _, cam := range a.cfg.Cameras {
 		if cam.Enabled && cam.Type == "webcam" {
@@ -266,15 +256,24 @@ func (a *App) toggleAllStreams() {
 		}
 	}
 
-	if anyWebcamRunning {
-		a.rtspUIStopped = true
-		a.multiManager.StopAll()
-		a.updateStartStopAllBtn(false)
-	} else {
-		a.rtspUIStopped = false
-		a.multiManager.StartAll()
-		a.updateStartStopAllBtn(true)
-	}
+	content := container.NewVBox(widget.NewLabel(i18n.T("msg_please_wait")), widget.NewProgressBarInfinite())
+	progress := dialog.NewCustomWithoutButtons(i18n.T("msg_please_wait"), content, a.window)
+	progress.Show()
+
+	go func() {
+		if anyWebcamRunning {
+			a.rtspUIStopped = true
+			a.multiManager.StopAll()
+			a.updateStartStopAllBtn(false)
+		} else {
+			a.rtspUIStopped = false
+			a.multiManager.StartAll()
+			a.updateStartStopAllBtn(true)
+		}
+		fyne.Do(func() {
+			progress.Hide()
+		})
+	}()
 }
 
 func (a *App) updateStartStopAllBtn(running bool) {
@@ -432,6 +431,9 @@ func (a *App) handleSourceSelectionChanged(cameraID string, selectedVal string, 
 }
 
 func (a *App) showEditCameraDialog(cameraID string) {
+	if a.blockWhileRecording() {
+		return
+	}
 	var selectedCam config.CameraSource
 	selectedIdx := -1
 	for i, c := range a.cfg.Cameras {
@@ -517,7 +519,7 @@ func (a *App) showEditCameraDialog(cameraID string) {
 			loadCapabilities := func(deviceName string) {
 				formatSelect.Options = []string{i18n.T("lbl_format_auto"), i18n.T("lbl_format_loading")}
 				formatSelect.SetSelected(i18n.T("lbl_format_auto"))
-				
+
 				devicePath := wcDevMap[deviceName]
 				if runtime.GOOS == "windows" {
 					devicePath = "video=" + deviceName
@@ -733,6 +735,9 @@ func (a *App) selectCamera(cameraID string) {
 // --- Add Camera Dialog ---
 
 func (a *App) showAddCameraDialog() {
+	if a.blockWhileRecording() {
+		return
+	}
 	if len(a.cfg.Cameras) >= config.MaxCameras {
 		dialog.ShowInformation(i18n.T("err_limit"), fmt.Sprintf(i18n.T("err_camera_limit"), config.MaxCameras), a.window)
 		return
@@ -848,6 +853,9 @@ func (a *App) showAddCameraDialog() {
 }
 
 func (a *App) removeSelectedCamera() {
+	if a.blockWhileRecording() {
+		return
+	}
 	if len(a.cfg.Cameras) <= config.MinCameras {
 		dialog.ShowInformation(i18n.T("err_limit"), i18n.T("msg_min_cameras", config.MinCameras), a.window)
 		return
@@ -895,7 +903,17 @@ func (a *App) removeSelectedCamera() {
 	}, a.window)
 }
 
-// --- Recording (Composite → Crop) ---
+// --- Per-camera recording → post-process grid ---
+
+func (a *App) blockWhileRecording() bool {
+	a.mu.Lock()
+	recording := a.isRecording
+	a.mu.Unlock()
+	if recording {
+		dialog.ShowInformation(i18n.T("record_locked_title"), i18n.T("record_locked_msg"), a.window)
+	}
+	return recording
+}
 
 func (a *App) toggleRecording() {
 	if a.isRecording {
@@ -911,69 +929,61 @@ func (a *App) startRecording() {
 		a.mu.Unlock()
 		return
 	}
-
-	cols, rows := ui.CalculateGrid(len(a.cfg.Cameras))
-	cellW, cellH := 1280, 720
-	fps := 15
-
-	maxW, maxH, maxFPS := 0, 0, 0
-	for _, cam := range a.cfg.Cameras {
-		if cam.Enabled {
-			mgr := a.multiManager.GetManager(cam.ID)
-			if mgr != nil {
-				w, h := mgr.ActiveResolution()
-				f := mgr.ActiveFPS()
-				if w > maxW {
-					maxW = w
-				}
-				if h > maxH {
-					maxH = h
-				}
-				if f > maxFPS {
-					maxFPS = f
-				}
-			}
-		}
-	}
-	if maxW > 0 {
-		cellW = maxW
-	}
-	if maxH > 0 {
-		cellH = maxH
-	}
-	if maxFPS > 0 {
-		fps = maxFPS
-		if fps > 60 {
-			fps = 60 // Cap recording to 60fps to prevent CPU overload and lag during recording
-		}
-	}
-
-	gridW := cols * cellW
-	gridH := rows * cellH
-
-	a.recordCols = cols
-	a.recordRows = rows
-	a.recordCellW = cellW
-	a.recordCellH = cellH
+	cfgCameras := append([]config.CameraSource(nil), a.cfg.Cameras...)
+	order := append([]string(nil), a.cameraOrder...)
 	a.mu.Unlock()
 
-	numCameras := 0
-	for _, cam := range a.cfg.Cameras {
-		if cam.Enabled {
-			numCameras++
-		}
+	byID := make(map[string]config.CameraSource, len(cfgCameras))
+	for _, camera := range cfgCameras {
+		byID[camera.ID] = camera
 	}
+	recordings := make([]stream.CameraRecording, 0, len(cfgCameras))
+	for _, id := range order {
+		camera, ok := byID[id]
+		if !ok || !camera.Enabled {
+			continue
+		}
+		manager := a.multiManager.GetManager(id)
+		if manager == nil {
+			continue
+		}
+		width, height := manager.ActiveResolution()
+		fps := manager.ActiveFPS()
+		if width <= 0 {
+			width = camera.Width
+		}
+		if height <= 0 {
+			height = camera.Height
+		}
+		if fps <= 0 {
+			fps = camera.FPS
+		}
+		recordings = append(recordings, stream.CameraRecording{
+			ID:         id,
+			Name:       camera.Name,
+			Width:      width,
+			Height:     height,
+			FPS:        fps,
+			Order:      len(recordings),
+			WasRunning: manager.State().Running,
+		})
+	}
+	if len(recordings) == 0 {
+		dialog.ShowError(fmt.Errorf("no enabled camera is available for recording"), a.window)
+		return
+	}
+	cols, rows := ui.CalculateGrid(len(recordings))
 
 	freeBytes, err := stream.DiskFreeBytes(a.cfg.RecordingsDir)
 	if err != nil {
 		a.logger.Printf("[recording] check disk space failed: %v", err)
 		dialog.ShowError(fmt.Errorf(i18n.T("disk_check_error"), err), a.window)
 		// Proceed anyway so a system error doesn't completely block recording
-		a.proceedWithRecording(gridW, gridH, fps, cols, rows, numCameras)
+		a.proceedWithRecording(recordings, cols, rows)
 		return
 	}
 
-	availableMins := stream.EstimateAvailableMinutes(freeBytes, gridW, gridH, fps, numCameras)
+	availableMins := stream.EstimateCameraRecordingAvailableMinutes(freeBytes, recordings, cols, rows)
 	a.logger.Printf("[recording] disk space check: freeBytes=%d, estimated_mins=%.2f", freeBytes, availableMins)
 
 	if availableMins < 1.0 {
@@ -983,70 +993,69 @@ func (a *App) startRecording() {
 		return
 	} else if availableMins < 15.0 {
 		a.showDiskSpaceWarning(availableMins, func() {
-			a.proceedWithRecording(gridW, gridH, fps, cols, rows, numCameras)
+			a.proceedWithRecording(recordings, cols, rows)
 		}, func() {
 			a.changeRecordingsDirAndRetry()
 		})
 		return
 	}
 
-	a.proceedWithRecording(gridW, gridH, fps, cols, rows, numCameras)
+	a.proceedWithRecording(recordings, cols, rows)
 }
 
-func (a *App) proceedWithRecording(gridW, gridH, fps, cols, rows, numCameras int) {
-	// Find/resolve recorder
-	var ffmpegPath string
-	var err error
-	if a.cfg != nil {
-		ffmpegPath, err = stream.ResolveFFmpegPath(a.cfg.FFmpegPath)
-	} else {
-		ffmpegPath, err = stream.ResolveFFmpegPath("")
-	}
+func (a *App) proceedWithRecording(cameras []stream.CameraRecording, cols, rows int) {
+	session, err := stream.NewRecordingSession(a.cfg.RecordingsDir, cameras, cols, rows)
 	if err != nil {
-		dialog.ShowError(fmt.Errorf("FFmpeg bulunamadı! Kayıt başlatılamıyor. Lütfen ayarlardan FFmpeg yolunu kontrol edin.\n\nHata: %v", err), a.window)
-		return
-	}
-	rec := stream.NewRecorder(ffmpegPath, a.cfg.RecordingsDir, a.logger)
-	if err := rec.Start(gridW, gridH, fps); err != nil {
 		dialog.ShowError(err, a.window)
 		return
 	}
 
-	a.mu.Lock()
-	a.isRecording = true
-	a.mu.Unlock()
+	content := container.NewVBox(widget.NewLabel(i18n.T("msg_please_wait")), widget.NewProgressBarInfinite())
+	progress := dialog.NewCustomWithoutButtons(i18n.T("msg_please_wait"), content, a.window)
+	progress.Show()
 
-	a.recordStart = time.Now()
-	fyne.Do(func() {
-		a.recordBtn.SetText(i18n.T("btn_stop"))
-		a.recordBtn.Icon = theme.MediaStopIcon()
-		a.recordBtn.Importance = widget.DangerImportance
-		a.recordBtn.Refresh()
-	})
-
-	// Start timer display
-	a.recordTimer = time.NewTicker(time.Second)
 	go func() {
-		for range a.recordTimer.C {
-			a.mu.Lock()
-			recording := a.isRecording
-			a.mu.Unlock()
-			if !recording {
+		err := a.multiManager.StartRecording(session, a.postProc.HardwareProfile())
+		fyne.Do(func() {
+			progress.Hide()
+			if err != nil {
+				_ = os.RemoveAll(session.TempDir)
+				dialog.ShowError(err, a.window)
 				return
 			}
-			elapsed := time.Since(a.recordStart).Truncate(time.Second)
-			fyne.Do(func() {
-				a.recordBtn.SetText(i18n.T("btn_stop_with_time", elapsed))
-				a.recordBtn.Refresh()
-			})
-		}
+
+			a.mu.Lock()
+			a.isRecording = true
+			a.recordSession = session
+			a.recordStart = session.StartedAt
+			a.mu.Unlock()
+
+			a.recordBtn.SetText(i18n.T("btn_stop"))
+			a.recordBtn.Icon = theme.MediaStopIcon()
+			a.recordBtn.Importance = widget.DangerImportance
+			a.recordBtn.Refresh()
+
+			// Start timer display
+			a.recordTimer = time.NewTicker(time.Second)
+			go func() {
+				for range a.recordTimer.C {
+					a.mu.Lock()
+					recording := a.isRecording
+					a.mu.Unlock()
+					if !recording {
+						return
+					}
+					elapsed := time.Since(a.recordStart).Truncate(time.Second)
+					fyne.Do(func() {
+						a.recordBtn.SetText(i18n.T("btn_stop_with_time", elapsed))
+						a.recordBtn.Refresh()
+					})
+				}
+			}()
+
+			a.startDiskMonitor(session, cameras, cols, rows)
+		})
 	}()
-
-	// Start composite record loop
-	go a.compositeRecordLoop(rec, cols, rows, gridW, gridH, fps)
-
-	// Start live disk monitoring
-	a.startDiskMonitor(gridW, gridH, fps, numCameras)
 }
 
 func (a *App) showDiskSpaceWarning(availableMinutes float64, onProceed func(), onChangeDir func()) {
@@ -1151,7 +1160,7 @@ func (a *App) changeRecordingsDirAndRetry() {
 	}, a.window)
 }
 
-func (a *App) startDiskMonitor(gridW, gridH, fps, numCameras int) {
+func (a *App) startDiskMonitor(session *stream.RecordingSession, cameras []stream.CameraRecording, cols, rows int) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -1159,10 +1168,13 @@ func (a *App) startDiskMonitor(gridW, gridH, fps, numCameras int) {
 
 	a.diskMonitorStop = make(chan struct{})
 	stopChan := a.diskMonitorStop
+	estimatedPerMinute := stream.EstimateCameraRecordingBytesPerMinute(cameras, cols, rows)
 
 	go func() {
-		ticker := time.NewTicker(60 * time.Second)
+		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
+		lastCheck := time.Now()
+		lastSize := session.DirectorySize()
 		for {
 			select {
 			case <-stopChan:
@@ -1178,7 +1190,26 @@ func (a *App) startDiskMonitor(gridW, gridH, fps, numCameras int) {
 					a.logger.Printf("[disk monitor] check failed: %v", err)
 					continue
 				}
-				mins := stream.EstimateAvailableMinutes(freeBytes, gridW, gridH, fps, numCameras)
+				now := time.Now()
+				currentSize := session.DirectorySize()
+				elapsed := now.Sub(lastCheck).Minutes()
+				actualPerMinute := uint64(0)
+				if elapsed > 0 && currentSize >= lastSize {
+					actualPerMinute = uint64(float64(currentSize-lastSize) / elapsed)
+				}
+				lastCheck = now
+				lastSize = currentSize
+
+				// During post-processing source, individual, aligned, and grid
+				// files coexist. Reserve four times the observed live rate.
+				requiredPerMinute := estimatedPerMinute
+				if actualPerMinute > 0 && actualPerMinute*4 > requiredPerMinute {
+					requiredPerMinute = actualPerMinute * 4
+				}
+				mins := float64(0)
+				if requiredPerMinute > 0 {
+					mins = float64(freeBytes) / float64(requiredPerMinute)
+				}
 				fyne.Do(func() {
 					a.mu.Lock()
 					recording := a.isRecording
@@ -1201,7 +1232,9 @@ func (a *App) startDiskMonitor(gridW, gridH, fps, numCameras int) {
 						}
 					}
 
-					if mins <= 0 {
+					// Leave an absolute 256 MiB emergency margin so FFmpeg can
+					// finalize every MKV container before recording stops.
+					if freeBytes <= 256*1024*1024 || mins < 0.5 {
 						a.stopRecording()
 						dialog.ShowError(fmt.Errorf(i18n.T("disk_auto_stop_msg")), a.window)
 					}
@@ -1265,150 +1298,6 @@ func (a *App) updateDiskBanner(minutes float64) {
 	a.diskBannerText.Refresh()
 }
 
-func (a *App) hidePerfBanner() {
-	if a.perfBanner != nil {
-		a.perfBanner.Hide()
-	}
-}
-
-func (a *App) initPerfBanner() {
-	if a.perfBanner != nil {
-		return
-	}
-
-	a.perfBannerBg = canvas.NewRectangle(color.RGBA{R: 231, G: 76, B: 60, A: 220}) // Red
-	a.perfBannerBg.CornerRadius = 4
-	a.perfBannerText = canvas.NewText("", color.White)
-	a.perfBannerText.TextStyle = fyne.TextStyle{Bold: true}
-	a.perfBannerText.Alignment = fyne.TextAlignCenter
-	a.perfBannerText.TextSize = 14
-
-	textContainer := container.NewPadded(a.perfBannerText)
-	bannerStack := container.NewStack(a.perfBannerBg, textContainer)
-	marginContainer := container.NewPadded(bannerStack)
-
-	a.perfBanner = container.NewBorder(
-		container.NewVBox(marginContainer), // Top placement for performance warning
-		nil, nil, nil,
-	)
-	a.perfBanner.Hide()
-
-	if a.gridContainer != nil {
-		a.gridContainer.Add(a.perfBanner)
-	}
-}
-
-func (a *App) updatePerfBanner(fps int) {
-	if a.perfBannerText == nil || a.perfBannerBg == nil {
-		return
-	}
-	a.perfBannerText.Text = fmt.Sprintf(i18n.T("perf_warning_msg"), fps)
-	a.perfBannerBg.Refresh()
-	a.perfBannerText.Refresh()
-}
-
-func (a *App) compositeRecordLoop(rec *stream.Recorder, cols, rows, gridW, gridH, targetFps int) {
-	currentFps := targetFps
-	ticker := time.NewTicker(time.Second / time.Duration(currentFps))
-	defer ticker.Stop()
-
-	fyne.Do(func() {
-		a.initPerfBanner()
-	})
-
-	lagCounter := 0
-
-	for range ticker.C {
-		start := time.Now()
-
-		a.mu.Lock()
-		recording := a.isRecording
-		a.mu.Unlock()
-
-		if !recording {
-			// Stop the recorder and save the temp file path
-			tempFile, err := rec.Stop()
-			if err != nil {
-				a.logger.Printf("[recording] stop error: %v", err)
-				fyne.Do(func() {
-					dialog.ShowError(fmt.Errorf("recording stop error: %w", err), a.window)
-				})
-				return
-			}
-
-			a.mu.Lock()
-			cols := a.recordCols
-			rows := a.recordRows
-			cellW := a.recordCellW
-			cellH := a.recordCellH
-			recStart := a.recordStart
-			cameras := make([]config.CameraSource, len(a.cfg.Cameras))
-			copy(cameras, a.cfg.Cameras)
-			cameraOrder := make([]string, len(a.cameraOrder))
-			copy(cameraOrder, a.cameraOrder)
-			a.mu.Unlock()
-
-			// Build segments for each camera
-			segments := buildCameraSegments(cameras, cameraOrder, cols, rows, cellW, cellH)
-
-			// Show patient name dialog
-			fyne.Do(func() {
-				a.showPatientNameDialog(tempFile, segments, recStart)
-			})
-			return
-		}
-
-		frames := make(map[string]*image.RGBA)
-		for id, panel := range a.cameraPanels {
-			if frame := panel.GetLastFrame(); frame != nil {
-				frames[id] = frame
-			}
-		}
-
-		composite := stream.ComposeGridFrame(frames, a.cameraOrder, cols, rows, gridW, gridH)
-		rec.WriteFrame(composite)
-
-		elapsed := time.Since(start)
-		frameDuration := time.Second / time.Duration(currentFps)
-
-		// Allow a 15% margin of error for GC spikes
-		if elapsed > frameDuration+frameDuration/6 {
-			lagCounter++
-		} else {
-			if lagCounter > 0 {
-				lagCounter--
-			}
-		}
-
-		// If lagged significantly for many frames
-		if lagCounter > 30 && currentFps > 15 {
-			// Calculate the realistic max FPS the system can handle right now
-			maxPossibleFps := int(time.Second / elapsed)
-			newFps := maxPossibleFps - 2 // Give a little headroom
-			
-			if newFps < 15 {
-				newFps = 15 // Absolute minimum FPS fallback
-			}
-			
-			// Ensure it always drops by at least 5 FPS to avoid getting stuck
-			if newFps >= currentFps {
-				newFps = currentFps - 5
-			}
-			
-			currentFps = newFps
-			ticker.Reset(time.Second / time.Duration(currentFps))
-			lagCounter = 0
-			fyne.Do(func() {
-				a.updatePerfBanner(currentFps)
-				if a.perfBanner != nil {
-					a.perfBanner.Show()
-				}
-			})
-			a.logger.Printf("[recording] System lag detected. Dynamically dropped recording composition to %d fps", currentFps)
-		}
-	}
-}
-
 func (a *App) stopRecording() {
 	a.mu.Lock()
 	if !a.isRecording {
@@ -1416,13 +1305,11 @@ func (a *App) stopRecording() {
 		return
 	}
 	a.isRecording = false
+	session := a.recordSession
+	a.recordSession = nil
 	a.mu.Unlock()
 
 	a.stopDiskMonitor()
-	
-	fyne.Do(func() {
-		a.hidePerfBanner()
-	})
 
 	if a.recordTimer != nil {
 		a.recordTimer.Stop()
@@ -1435,36 +1322,24 @@ func (a *App) stopRecording() {
 		a.recordBtn.Importance = widget.MediumImportance
 		a.recordBtn.Refresh()
 	})
-}
-
-// buildCameraSegments calculates crop coordinates for each camera in the grid.
-func buildCameraSegments(cameras []config.CameraSource, order []string, cols, rows, cellW, cellH int) []stream.CameraSegment {
-	// Build name lookup
-	nameMap := make(map[string]string)
-	for _, cam := range cameras {
-		nameMap[cam.ID] = cam.Name
+	if session == nil {
+		return
 	}
 
-	var segments []stream.CameraSegment
-	for idx, camID := range order {
-		if idx >= cols*rows {
-			break
-		}
-		col := idx % cols
-		row := idx / cols
-		segments = append(segments, stream.CameraSegment{
-			ID:   camID,
-			Name: nameMap[camID],
-			X:    col * cellW,
-			Y:    row * cellH,
-			W:    cellW,
-			H:    cellH,
+	content := container.NewVBox(widget.NewLabel(i18n.T("msg_please_wait")), widget.NewProgressBarInfinite())
+	progress := dialog.NewCustomWithoutButtons(i18n.T("msg_please_wait"), content, a.window)
+	progress.Show()
+
+	go func() {
+		a.multiManager.StopRecording(session)
+		fyne.Do(func() {
+			progress.Hide()
+			a.showPatientNameDialog(session)
 		})
-	}
-	return segments
+	}()
 }
 
-func (a *App) showPatientNameDialog(tempFile string, segments []stream.CameraSegment, recStart time.Time) {
+func (a *App) showPatientNameDialog(session *stream.RecordingSession) {
 	nameEntry := widget.NewEntry()
 	nameEntry.SetPlaceHolder(i18n.T("record_patient_placeholder"))
 
@@ -1477,8 +1352,7 @@ func (a *App) showPatientNameDialog(tempFile string, segments []stream.CameraSeg
 		},
 		func(ok bool) {
 			if !ok {
-				// User cancelled — clean up temp file
-				_ = os.Remove(tempFile)
+				_ = os.RemoveAll(session.TempDir)
 				return
 			}
 			patientName := strings.TrimSpace(nameEntry.Text)
@@ -1486,12 +1360,11 @@ func (a *App) showPatientNameDialog(tempFile string, segments []stream.CameraSeg
 
 			if err := os.MkdirAll(outDir, 0o755); err != nil {
 				dialog.ShowError(fmt.Errorf("failed to create output directory: %w", err), a.window)
-				_ = os.Remove(tempFile)
 				return
 			}
 
 			// Show progress dialog while processing
-			progressBar := widget.NewProgressBarInfinite()
+			progressBar := widget.NewProgressBar()
 			progressLabel := widget.NewLabel(i18n.T("record_processing"))
 			progressContent := container.NewVBox(progressLabel, progressBar)
 			progressDlg := dialog.NewCustomWithoutButtons(
@@ -1509,28 +1382,33 @@ func (a *App) showPatientNameDialog(tempFile string, segments []stream.CameraSeg
 				done := make(chan struct{})
 
 				go func() {
-					result = a.postProc.Process(ctx, tempFile, segments, outDir, recStart, progressCh)
+					result = a.postProc.Process(ctx, session, outDir, progressCh)
 					close(done)
 				}()
 
-				// Drain progress channel
+				// Read from progress channel and update UI
 				go func() {
-					for range progressCh {
+					for val := range progressCh {
+						v := val
+						fyne.Do(func() {
+							progressBar.SetValue(v)
+						})
 					}
 				}()
 
 				<-done
 
-				// Clean up temp file only if no error occurred
+				// Clean up compressed source and aligned temporary files only
+				// after all final MP4 files have been atomically completed.
 				if result.Err == nil {
-					_ = os.Remove(tempFile)
+					_ = os.RemoveAll(session.TempDir)
 				}
 
 				fyne.Do(func() {
 					progressDlg.Hide()
 
 					if result.Err != nil {
-						detailedErr := fmt.Errorf("%v\n\nRaw recording file was NOT deleted and is saved at:\n%s", result.Err, tempFile)
+						detailedErr := fmt.Errorf("%v\n\nCompressed recovery files were preserved at:\n%s", result.Err, session.TempDir)
 						dialog.ShowError(detailedErr, a.window)
 						return
 					}
@@ -1568,8 +1446,14 @@ func (a *App) showPatientNameDialog(tempFile string, segments []stream.CameraSeg
 
 // --- Settings Dialog ---
 func (a *App) showSettingsDialog() {
+	if a.blockWhileRecording() {
+		return
+	}
 	autostartCheck := widget.NewCheck(i18n.T("lbl_autostart"), nil)
 	autostartCheck.SetChecked(a.cfg.AutoStart)
+
+	hwAccelCheck := widget.NewCheck(i18n.T("lbl_disable_hw_accel"), nil)
+	hwAccelCheck.SetChecked(a.cfg.DisableHardwareAccel)
 
 	langOptions := []string{"🇹🇷 Türkçe", "🇬🇧 English", "🇸🇦 العربية"}
 	langMap := map[string]string{
@@ -1656,6 +1540,7 @@ func (a *App) showSettingsDialog() {
 		container.NewBorder(nil, nil, widget.NewLabel(i18n.T("lbl_language")+": "), nil, langSelect),
 		recordingsRow,
 		autostartCheck,
+		hwAccelCheck,
 		widget.NewSeparator(),
 		container.NewGridWithColumns(2, configBtn, logsBtn),
 		container.NewHBox(layout.NewSpacer(), versionText),
@@ -1667,6 +1552,7 @@ func (a *App) showSettingsDialog() {
 	d.SetOnClosed(func() {
 		a.mu.Lock()
 		a.cfg.AutoStart = autostartCheck.Checked
+		a.cfg.DisableHardwareAccel = hwAccelCheck.Checked
 		a.cfg.RecordingsDir = recordingsDirEntry.Text
 		_ = config.Save(*a.cfg, a.cfgPath)
 		a.mu.Unlock()
@@ -1688,6 +1574,9 @@ func (a *App) showSettingsDialog() {
 // --- Layout Save/Load ---
 
 func (a *App) showSaveLayoutDialog() {
+	if a.blockWhileRecording() {
+		return
+	}
 	nameEntry := widget.NewEntry()
 	nameEntry.SetPlaceHolder(i18n.T("layout_name_placeholder"))
 
@@ -1724,6 +1613,9 @@ func (a *App) showSaveLayoutDialog() {
 }
 
 func (a *App) showLoadLayoutDialog() {
+	if a.blockWhileRecording() {
+		return
+	}
 	if len(a.cfg.SavedLayouts) == 0 {
 		dialog.ShowInformation(i18n.T("layout_empty_title"), i18n.T("layout_empty"), a.window)
 		return
@@ -1981,7 +1873,7 @@ func (a *App) Run() error {
 		}
 
 		multiMgr := stream.NewMultiManager(&cfg, cfgPath, logger)
-		postProc := stream.NewPostProcessor(resolvedFFmpeg, logger)
+		postProc := stream.NewPostProcessor(resolvedFFmpeg, logger, cfg.DisableHardwareAccel)
 
 		// Initialize i18n
 		i18n.Init(cfg.Language)
@@ -2017,8 +1909,6 @@ func (a *App) Run() error {
 					a.multiManager.StartAll()
 				}
 
-
-
 				// Show tutorial on first run
 				if !a.cfg.TutorialShown {
 					// Slight delay so the window renders first
@@ -2032,7 +1922,7 @@ func (a *App) Run() error {
 
 			// Ensure the splash screen is visible for at least 1 second (1000ms)
 			elapsed := time.Since(startTime)
-			remaining := 1000 * time.Millisecond - elapsed
+			remaining := 1000*time.Millisecond - elapsed
 
 			if remaining > 0 {
 				time.AfterFunc(remaining, func() {
@@ -2077,8 +1967,8 @@ func (a *App) statusLoop() {
 			panel.SetStatus(running, state.LastError)
 
 			// Check for USB bandwidth error (exit status 228, No space left on device, or ENOSPC)
-			if state.LastError != "" && (strings.Contains(state.LastError, "exit status 228") || 
-				strings.Contains(strings.ToLower(state.LastError), "no space left on device") || 
+			if state.LastError != "" && (strings.Contains(state.LastError, "exit status 228") ||
+				strings.Contains(strings.ToLower(state.LastError), "no space left on device") ||
 				strings.Contains(strings.ToLower(state.LastError), "enospc")) {
 				a.mu.Lock()
 				shown := a.shownUSBError[camID]
@@ -2094,7 +1984,7 @@ func (a *App) statusLoop() {
 							break
 						}
 					}
-					
+
 					// Show detailed warning popup
 					fyne.Do(func() {
 						a.showUSBBandwidthErrorDialog(camName)
@@ -2167,7 +2057,6 @@ func openPath(target string) {
 
 // Ensure unused imports are satisfied
 var _ = sort.Strings
-var _ = canvas.NewImageFromImage
 
 // --- Context Menu ---
 

@@ -42,6 +42,7 @@
   "lbl_ip_url": "IP URL",
   "lbl_webcam": "Webcam",
   "lbl_autostart": "Otomatik başlat",
+  "lbl_disable_hw_accel": "Donanım Hızlandırmasını Kapat",
   "lbl_camera_format": "Format (Çözünürlük ve FPS)",
   "lbl_format_auto": "Varsayılan (Otomatik)",
   "lbl_format_loading": "Kamera özellikleri yükleniyor...",
@@ -98,6 +99,8 @@
   "record_done_msg": "Tüm videolar şuraya kaydedildi:\n%s",
   "record_done_open": "Klasörü Aç",
   "record_done_close": "Kapat",
+  "record_locked_title": "Kayıt Devam Ediyor",
+  "record_locked_msg": "Kayıt durdurulana kadar kamera, yayın, yerleşim ve kayıt klasörü ayarları kilitlidir.",
 
   "tutorial_skip": "Atla",
   "tutorial_next": "İleri",

@@ -2,13 +2,15 @@
 
 A cross-platform multi-camera helper and RTSP-to-webcam routing agent built with Go, Fyne UI, and FFmpeg. 
 
-This tool allows you to monitor multiple camera inputs (RTSP streams and local webcams) in a configurable grid, save/load custom layouts, and record composite streams.
+This tool allows you to monitor multiple camera inputs (RTSP streams and local webcams), save/load custom layouts, and record every camera at its own native resolution and FPS.
 
 ## Features
 
 - **Multi-Camera Grid**: Configurable grid layout displaying live streams from both RTSP cameras and local physical webcams.
 - **Layout Manager**: Save, load, and manage custom layout configurations.
-- **Grid Recording**: Record the composite grid of all live streams into a single video file.
+- **Per-Camera Recording**: Records compressed camera streams independently and creates the general grid after recording, avoiding live upscaling and synthetic high-FPS frames.
+- **Reconnect-Aware Output**: The general video leaves a disconnected camera cell black; individual camera timestamps visibly jump to the real reconnect time.
+- **Verified Hardware Encoding**: Probes NVENC/QSV/AMF/VAAPI with a real encode and safely falls back to libx264.
 - **Automatic GPU Fallback**: Tests GPU/GLFW capabilities on startup and falls back to software rendering (`FYNE_RENDER=software` / `LIBGL_ALWAYS_SOFTWARE=1`) if hardware acceleration is unavailable.
 - **Low-Latency Streaming**: Pre-tuned FFmpeg arguments (`-fflags nobuffer` and `-flags low_delay`) minimize latency for both RTSP streams and local webcam feeds.
 

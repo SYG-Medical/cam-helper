@@ -3,6 +3,7 @@ package stream
 import (
 	"fmt"
 	"sync"
+	"time"
 
 	"nystavision/internal/config"
 	"nystavision/internal/logging"
@@ -15,6 +16,102 @@ type MultiManager struct {
 	logger  *logging.Logger
 	cfg     *config.Config
 	cfgPath string
+}
+
+// StartRecording restarts each session camera once so the existing camera input
+// process can expose both preview and a compressed recording output.
+func (mm *MultiManager) StartRecording(session *RecordingSession, profile HardwareProfile) error {
+	cameras := session.CameraList()
+	type target struct {
+		manager *Manager
+		camera  CameraRecording
+	}
+	targets := make([]target, 0, len(cameras))
+
+	mm.mu.Lock()
+	for _, camera := range cameras {
+		manager := mm.streams[camera.ID]
+		if manager == nil {
+			mm.mu.Unlock()
+			return fmt.Errorf("recording camera %q is unavailable", camera.Name)
+		}
+		targets = append(targets, target{manager: manager, camera: camera})
+	}
+	mm.mu.Unlock()
+
+	var wg sync.WaitGroup
+	for _, item := range targets {
+		wg.Add(1)
+		go func(manager *Manager) {
+			defer wg.Done()
+			manager.Stop()
+		}(item.manager)
+	}
+	wg.Wait()
+
+	session.UpdateStartTime(time.Now())
+
+	started := make([]target, 0, len(targets))
+	for _, item := range targets {
+		item.manager.SetRecordingSession(session, profile)
+		if err := item.manager.Start(); err != nil {
+			for _, active := range started {
+				active.manager.Stop()
+				active.manager.ClearRecordingSession()
+				if active.camera.WasRunning {
+					_ = active.manager.Start()
+				}
+			}
+			item.manager.ClearRecordingSession()
+			return fmt.Errorf("start recording for %s: %w", item.camera.Name, err)
+		}
+		started = append(started, item)
+	}
+	return nil
+}
+
+// StopRecording closes all camera segment files, restores preview-only
+// pipelines, and returns after FFmpeg has finalized the containers.
+func (mm *MultiManager) StopRecording(session *RecordingSession) {
+	// Gecikme payı (1.5 saniye): Kullanıcının ekranda görüp "Bitir" tuşuna bastığı andaki
+	// karelerin RTSP/Webcam üzerinden FFmpeg'e tam olarak ulaşması ve işlenmesi için küçük bir bekleme süresi
+	// ekleyerek videonun erken kesilmesini önleriz.
+	time.Sleep(1500 * time.Millisecond)
+
+	cameras := session.CameraList()
+	type target struct {
+		manager *Manager
+		camera  CameraRecording
+	}
+	targets := make([]target, 0, len(cameras))
+
+	mm.mu.Lock()
+	for _, camera := range cameras {
+		if manager := mm.streams[camera.ID]; manager != nil {
+			targets = append(targets, target{manager: manager, camera: camera})
+		}
+	}
+	mm.mu.Unlock()
+
+	var wg sync.WaitGroup
+	for _, item := range targets {
+		wg.Add(1)
+		go func(manager *Manager) {
+			defer wg.Done()
+			manager.Stop()
+			manager.ClearRecordingSession()
+		}(item.manager)
+	}
+	wg.Wait()
+	session.Finish(time.Now())
+
+	for _, item := range targets {
+		if item.camera.WasRunning {
+			if err := item.manager.Start(); err != nil {
+				mm.logger.Printf("failed to restore preview for %s: %v", item.camera.Name, err)
+			}
+		}
+	}
 }
 
 // NewMultiManager creates a new multi-camera manager.

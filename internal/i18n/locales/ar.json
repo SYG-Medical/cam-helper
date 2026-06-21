@@ -96,6 +96,8 @@
   "record_done_msg": "تم حفظ جميع مقاطع الفيديو في:\n%s",
   "record_done_open": "فتح المجلد",
   "record_done_close": "إغلاق",
+  "record_locked_title": "التسجيل جارٍ",
+  "record_locked_msg": "إعدادات الكاميرا والبث والتخطيط ومجلد التسجيل مقفلة حتى يتوقف التسجيل.",
 
   "tutorial_skip": "تخطي",
   "tutorial_next": "التالي",
