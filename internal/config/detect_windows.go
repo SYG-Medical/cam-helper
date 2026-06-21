@@ -136,6 +136,7 @@ func detectWebcamsPowerShell() []CameraSource {
 	lines := strings.Split(string(output), "\n")
 	var cameras []CameraSource
 	idx := 1
+	nameCounts := make(map[string]int)
 
 	for _, line := range lines {
 		name := strings.TrimSpace(line)
