@@ -94,6 +94,9 @@ type App struct {
 	layoutsRef          *widget.Button // for spotlight tutorials
 	drawerVisible       bool
 
+	removeBtn        *widget.Button
+	isCompactToolbar bool
+
 	shownUSBError map[string]bool
 }
 
@@ -211,10 +214,31 @@ func (a *App) setupUI() {
 	// Apply split offsets on startup if we have saved ones
 	if len(a.cfg.SplitOffsets) > 0 {
 		ApplySplitOffsets(a.cameraGrid, a.cfg.SplitOffsets)
+		offsets := a.cfg.SplitOffsets
+		go func() {
+			for _, delay := range []time.Duration{100 * time.Millisecond, 300 * time.Millisecond} {
+				time.Sleep(delay)
+				fyne.Do(func() {
+					ApplySplitOffsets(a.cameraGrid, offsets)
+				})
+			}
+		}()
 	}
 
 	// Start status update loop
 	go a.statusLoop()
+
+	// Start window size polling loop for responsive toolbar labels
+	go func() {
+		ticker := time.NewTicker(250 * time.Millisecond)
+		defer ticker.Stop()
+		for range ticker.C {
+			if a.window == nil {
+				return
+			}
+			a.updateToolbarLabels()
+		}
+	}()
 }
 
 func (a *App) buildStatusBar() {
@@ -251,7 +275,7 @@ func (a *App) buildToolbar() *fyne.Container {
 	})
 
 	// Remove camera button — with label
-	removeBtn := widget.NewButtonWithIcon(i18n.T("btn_toolbar_remove"), theme.ContentRemoveIcon(), func() {
+	a.removeBtn = widget.NewButtonWithIcon(i18n.T("btn_toolbar_remove"), theme.ContentRemoveIcon(), func() {
 		a.removeSelectedCamera()
 	})
 
@@ -285,11 +309,11 @@ func (a *App) buildToolbar() *fyne.Container {
 	})
 
 	// Layout: [+ Ekle] [- Sil] | [▶ Tümünü Başlat] [⏺ Kayıt] | [⚙] [?] | [Düzenler]
-	leftGroup := container.NewHBox(a.addBtn, removeBtn)
+	leftGroup := container.NewHBox(a.addBtn, a.removeBtn)
 	middleGroup := container.NewHBox(a.startStopAllBtn, widget.NewSeparator(), a.recordBtn)
 	rightGroup := container.NewHBox(widget.NewSeparator(), settingsBtn, helpBtn, widget.NewSeparator(), layoutsBtn)
 
-	return container.NewHBox(leftGroup, middleGroup, rightGroup)
+	return container.NewBorder(nil, nil, leftGroup, rightGroup, container.NewCenter(middleGroup))
 }
 
 func (a *App) toggleAllStreams() {
@@ -328,16 +352,130 @@ func (a *App) toggleAllStreams() {
 
 func (a *App) updateStartStopAllBtn(running bool) {
 	fyne.Do(func() {
+		a.mu.Lock()
+		isCompact := a.isCompactToolbar
+		a.mu.Unlock()
+
 		if running {
-			a.startStopAllBtn.SetText(i18n.T("btn_stop_all"))
+			if isCompact {
+				a.startStopAllBtn.SetText("")
+			} else {
+				a.startStopAllBtn.SetText(i18n.T("btn_stop_all"))
+			}
 			a.startStopAllBtn.Icon = theme.MediaStopIcon()
 			a.startStopAllBtn.Importance = widget.WarningImportance
 		} else {
-			a.startStopAllBtn.SetText(i18n.T("btn_start_all"))
+			if isCompact {
+				a.startStopAllBtn.SetText("")
+			} else {
+				a.startStopAllBtn.SetText(i18n.T("btn_start_all"))
+			}
 			a.startStopAllBtn.Icon = theme.MediaPlayIcon()
 			a.startStopAllBtn.Importance = widget.SuccessImportance
 		}
 		a.startStopAllBtn.Refresh()
+	})
+}
+
+func (a *App) updateRecordBtn() {
+	fyne.Do(func() {
+		a.mu.Lock()
+		isRecording := a.isRecording
+		isCompact := a.isCompactToolbar
+		a.mu.Unlock()
+
+		if isRecording {
+			if isCompact {
+				a.recordBtn.SetText("")
+			} else {
+				a.recordBtn.SetText(i18n.T("btn_stop"))
+			}
+			a.recordBtn.Icon = theme.MediaStopIcon()
+			a.recordBtn.Importance = widget.DangerImportance
+		} else {
+			if isCompact {
+				a.recordBtn.SetText("")
+			} else {
+				a.recordBtn.SetText(i18n.T("btn_record"))
+			}
+			a.recordBtn.Icon = theme.MediaRecordIcon()
+			a.recordBtn.Importance = widget.MediumImportance
+		}
+		a.recordBtn.Refresh()
+	})
+}
+
+func (a *App) updateToolbarLabels() {
+	width := a.window.Canvas().Size().Width
+	isCompact := width < 800
+
+	a.mu.Lock()
+	if a.isCompactToolbar == isCompact {
+		a.mu.Unlock()
+		return
+	}
+	a.isCompactToolbar = isCompact
+	a.mu.Unlock()
+
+	fyne.Do(func() {
+		if isCompact {
+			a.addBtn.SetText("")
+			if a.removeBtn != nil {
+				a.removeBtn.SetText("")
+			}
+			a.startStopAllBtn.SetText("")
+			a.recordBtn.SetText("")
+			if a.layoutsRef != nil {
+				a.layoutsRef.SetText("")
+			}
+		} else {
+			a.addBtn.SetText(i18n.T("btn_toolbar_add"))
+			if a.removeBtn != nil {
+				a.removeBtn.SetText(i18n.T("btn_toolbar_remove"))
+			}
+			if a.layoutsRef != nil {
+				a.layoutsRef.SetText(i18n.T("btn_layouts"))
+			}
+
+			// Update startStopAllBtn text based on running streams
+			a.mu.Lock()
+			cameras := make([]config.CameraSource, len(a.cfg.Cameras))
+			copy(cameras, a.cfg.Cameras)
+			isRecording := a.isRecording
+			a.mu.Unlock()
+
+			anyWebcamRunning := false
+			for _, cam := range cameras {
+				if cam.Enabled && cam.Type == "webcam" {
+					if a.multiManager.GetState(cam.ID).Running {
+						anyWebcamRunning = true
+						break
+					}
+				}
+			}
+			if anyWebcamRunning {
+				a.startStopAllBtn.SetText(i18n.T("btn_stop_all"))
+			} else {
+				a.startStopAllBtn.SetText(i18n.T("btn_start_all"))
+			}
+
+			// Update recordBtn text based on recording status
+			if isRecording {
+				a.recordBtn.SetText(i18n.T("btn_stop"))
+			} else {
+				a.recordBtn.SetText(i18n.T("btn_record"))
+			}
+		}
+
+		a.addBtn.Refresh()
+		if a.removeBtn != nil {
+			a.removeBtn.Refresh()
+		}
+		a.startStopAllBtn.Refresh()
+		a.recordBtn.Refresh()
+		if a.layoutsRef != nil {
+			a.layoutsRef.Refresh()
+		}
 	})
 }
 
@@ -759,6 +897,9 @@ func (a *App) rebuildGrid() {
 		a.gridContainer.Add(a.diskBanner)
 	}
 	a.gridContainer.Refresh()
+	if a.window != nil && a.window.Content() != nil {
+		a.window.Content().Refresh()
+	}
 
 	a.setupFrameCallbacks()
 	a.refreshCameraDropdowns()
@@ -1086,10 +1227,7 @@ func (a *App) proceedWithRecording(cameras []stream.CameraRecording, cols, rows 
 			a.recordStart = session.StartedAt
 			a.mu.Unlock()
 
-			a.recordBtn.SetText(i18n.T("btn_stop"))
-			a.recordBtn.Icon = theme.MediaStopIcon()
-			a.recordBtn.Importance = widget.DangerImportance
-			a.recordBtn.Refresh()
+			a.updateRecordBtn()
 
 			// Start timer display in status bar
 			a.recordTimer = time.NewTicker(time.Second)
@@ -1375,10 +1513,7 @@ func (a *App) stopRecording() {
 	}
 
 	fyne.Do(func() {
-		a.recordBtn.SetText(i18n.T("btn_record"))
-		a.recordBtn.Icon = theme.MediaRecordIcon()
-		a.recordBtn.Importance = widget.MediumImportance
-		a.recordBtn.Refresh()
+		a.updateRecordBtn()
 
 		// Clear recording timer in status bar
 		if a.recordingTimeLabel != nil {
@@ -1764,31 +1899,24 @@ func (a *App) refreshLayoutList() {
 	for _, l := range layouts {
 		layoutName := l.Name
 
-		// Miniature silhouette of the grid layout shape
+		// Miniature silhouette of the grid layout shape using custom rendering tree to avoid thick handles
 		gridCols, gridRows := ui.CalculateGrid(len(l.Cameras))
-		miniGrid := container.NewGridWithColumns(gridCols)
 		totalCells := gridCols * gridRows
-		for cIdx := 0; cIdx < totalCells; cIdx++ {
-			var cellColor color.Color = color.Transparent
-			if cIdx < len(l.Cameras) {
-				cam := l.Cameras[cIdx]
-				if cam.Enabled {
-					cellColor = color.NRGBA{R: 46, G: 134, B: 193, A: 160} // Semi-transparent Medical Blue
-				} else {
-					cellColor = color.NRGBA{R: 70, G: 80, B: 90, A: 255} // Dark Gray-Blue
-				}
-			}
-			rect := canvas.NewRectangle(cellColor)
-			rect.SetMinSize(fyne.NewSize(12, 10))
-			rect.StrokeWidth = 1
-			rect.StrokeColor = color.NRGBA{R: 12, G: 15, B: 19, A: 120} // subtle divider
-			rect.CornerRadius = 2
-			miniGrid.Add(rect)
+
+		tree := buildGridTree(gridCols, gridRows, totalCells)
+		if len(l.SplitOffsets) > 0 {
+			idx := 0
+			assignOffsets(tree, l.SplitOffsets, &idx)
 		}
+
+		var miniObjects []fyne.CanvasObject
+		miniObjects = renderTree(tree, 0, 0, 48, 36, miniObjects, l.Cameras)
+
+		miniGrid := container.NewWithoutLayout(miniObjects...)
 
 		miniGridSpacer := canvas.NewRectangle(color.Transparent)
 		miniGridSpacer.SetMinSize(fyne.NewSize(48, 36))
-		miniGridWrapper := container.NewStack(miniGridSpacer, container.NewCenter(miniGrid))
+		miniGridWrapper := container.NewStack(miniGridSpacer, miniGrid)
 
 		// Smaller layout name and camera count texts
 		var nameColor color.Color = colorTextPrimary
@@ -1808,20 +1936,20 @@ func (a *App) refreshLayoutList() {
 		// Read closure-safe variables
 		lname := layoutName
 
-		loadBtn := widget.NewButtonWithIcon("", theme.FolderOpenIcon(), func() {
-			a.loadLayoutByName(lname)
-		})
-		loadBtn.Importance = widget.MediumImportance
-
 		deleteBtn := widget.NewButtonWithIcon("", theme.DeleteIcon(), func() {
 			a.deleteLayoutByName(lname)
 		})
 		deleteBtn.Importance = widget.DangerImportance
 
-		btnRow := container.NewHBox(loadBtn, deleteBtn)
+		// Visual content that is clickable (silhouette + text)
+		visualContent := container.NewBorder(nil, nil, miniGridWrapper, nil, container.NewCenter(textCol))
 
-		// Layout content: silhouette on left, buttons on right, text in center
-		itemContent := container.NewBorder(nil, nil, miniGridWrapper, btnRow, container.NewCenter(textCol))
+		cardClickable := newClickableCard(visualContent, func() {
+			a.loadLayoutByName(lname)
+		})
+
+		// Layout content: clickable part on left/center, delete button on right
+		itemContent := container.NewBorder(nil, nil, nil, deleteBtn, cardClickable)
 
 		itemBg := canvas.NewRectangle(colorInputSurface)
 		itemBg.CornerRadius = 6
@@ -1886,11 +2014,20 @@ func (a *App) loadLayoutByName(name string) {
 
 	a.rebuildGrid()
 
-	if loadedLayout.WindowWidth > 100 && loadedLayout.WindowHeight > 100 {
+	if !a.window.FullScreen() && loadedLayout.WindowWidth > 100 && loadedLayout.WindowHeight > 100 {
 		a.window.Resize(fyne.NewSize(float32(loadedLayout.WindowWidth), float32(loadedLayout.WindowHeight)))
 	}
 	if len(loadedLayout.SplitOffsets) > 0 {
 		ApplySplitOffsets(a.cameraGrid, loadedLayout.SplitOffsets)
+		offsets := loadedLayout.SplitOffsets
+		go func() {
+			for _, delay := range []time.Duration{50 * time.Millisecond, 150 * time.Millisecond, 300 * time.Millisecond} {
+				time.Sleep(delay)
+				fyne.Do(func() {
+					ApplySplitOffsets(a.cameraGrid, offsets)
+				})
+			}
+		}()
 	}
 
 	if a.cfg.AutoStart {
@@ -2525,3 +2662,168 @@ func getFFmpegInstallInstructions() installInstruction {
 		}
 	}
 }
+
+type clickableCard struct {
+	widget.BaseWidget
+	content  fyne.CanvasObject
+	onTapped func()
+}
+
+func newClickableCard(content fyne.CanvasObject, onTapped func()) *clickableCard {
+	c := &clickableCard{
+		content:  content,
+		onTapped: onTapped,
+	}
+	c.ExtendBaseWidget(c)
+	return c
+}
+
+func (c *clickableCard) CreateRenderer() fyne.WidgetRenderer {
+	return widget.NewSimpleRenderer(c.content)
+}
+
+func (c *clickableCard) Tapped(_ *fyne.PointEvent) {
+	if c.onTapped != nil {
+		c.onTapped()
+	}
+}
+
+// Types and logic for layout grid silhouette preview rendering
+type miniNode interface{}
+
+type miniLeaf struct {
+	index int
+}
+
+type miniSplit struct {
+	horizontal bool
+	offset     float64
+	leading    miniNode
+	trailing   miniNode
+}
+
+func buildHSplitTree(items []miniNode) miniNode {
+	if len(items) == 0 {
+		return &miniLeaf{index: -1}
+	}
+	if len(items) == 1 {
+		return items[0]
+	}
+	left := items[0]
+	right := buildHSplitTree(items[1:])
+	return &miniSplit{
+		horizontal: true,
+		offset:     1.0 / float64(len(items)),
+		leading:    left,
+		trailing:   right,
+	}
+}
+
+func buildVSplitTree(rows []miniNode) miniNode {
+	if len(rows) == 0 {
+		return &miniLeaf{index: -1}
+	}
+	if len(rows) == 1 {
+		return rows[0]
+	}
+	top := rows[0]
+	bottom := buildVSplitTree(rows[1:])
+	return &miniSplit{
+		horizontal: false,
+		offset:     1.0 / float64(len(rows)),
+		leading:    top,
+		trailing:   bottom,
+	}
+}
+
+func buildGridTree(cols, rows int, totalCells int) miniNode {
+	var rowNodes []miniNode
+	cellIdx := 0
+	for r := 0; r < rows; r++ {
+		var colNodes []miniNode
+		for c := 0; c < cols; c++ {
+			if cellIdx < totalCells {
+				colNodes = append(colNodes, &miniLeaf{index: cellIdx})
+			} else {
+				colNodes = append(colNodes, &miniLeaf{index: -1})
+			}
+			cellIdx++
+		}
+		rowNodes = append(rowNodes, buildHSplitTree(colNodes))
+	}
+	return buildVSplitTree(rowNodes)
+}
+
+func assignOffsets(node miniNode, offsets []float64, idx *int) {
+	if node == nil || *idx >= len(offsets) {
+		return
+	}
+	if split, ok := node.(*miniSplit); ok {
+		split.offset = offsets[*idx]
+		*idx++
+		assignOffsets(split.leading, offsets, idx)
+		assignOffsets(split.trailing, offsets, idx)
+	}
+}
+
+func renderTree(node miniNode, x, y, w, h float32, list []fyne.CanvasObject, cameras []config.CameraSource) []fyne.CanvasObject {
+	if node == nil {
+		return list
+	}
+
+	if leaf, ok := node.(*miniLeaf); ok {
+		var cellColor color.Color
+		if leaf.index >= 0 && leaf.index < len(cameras) {
+			cam := cameras[leaf.index]
+			if cam.Enabled {
+				cellColor = color.NRGBA{R: 46, G: 134, B: 193, A: 160} // Semi-transparent Medical Blue
+			} else {
+				cellColor = color.NRGBA{R: 70, G: 80, B: 90, A: 255} // Dark Gray-Blue
+			}
+		} else {
+			cellColor = color.NRGBA{R: 40, G: 45, B: 50, A: 100} // Empty slot
+		}
+
+		rect := canvas.NewRectangle(cellColor)
+		rect.CornerRadius = 1
+
+		rect.Move(fyne.NewPos(x, y))
+		rect.Resize(fyne.NewSize(w, h))
+
+		list = append(list, rect)
+		return list
+	}
+
+	if split, ok := node.(*miniSplit); ok {
+		gap := float32(1.0) // thin separator gap
+		if split.horizontal {
+			wl := w * float32(split.offset)
+			wr := w - wl
+
+			list = renderTree(split.leading, x, y, wl-gap/2, h, list, cameras)
+			list = renderTree(split.trailing, x+wl+gap/2, y, wr-gap/2, h, list, cameras)
+
+			// Separator line
+			sep := canvas.NewRectangle(color.NRGBA{R: 189, G: 195, B: 199, A: 180})
+			sep.Move(fyne.NewPos(x+wl-0.5, y))
+			sep.Resize(fyne.NewSize(1, h))
+			list = append(list, sep)
+		} else {
+			ht := h * float32(split.offset)
+			hb := h - ht
+
+			list = renderTree(split.leading, x, y, w, ht-gap/2, list, cameras)
+			list = renderTree(split.trailing, x, y+ht+gap/2, w, hb-gap/2, list, cameras)
+
+			// Separator line
+			sep := canvas.NewRectangle(color.NRGBA{R: 189, G: 195, B: 199, A: 180})
+			sep.Move(fyne.NewPos(x, y+ht-0.5))
+			sep.Resize(fyne.NewSize(w, 1))
+			list = append(list, sep)
+		}
+	}
+
+	return list
+}
+
+
