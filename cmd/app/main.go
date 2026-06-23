@@ -8,7 +8,7 @@ import (
 
 	"nystavision/internal/assets"
 	"nystavision/internal/singleinstance"
-	"nystavision/internal/tray"
+	"nystavision/internal/gui"
 
 	"github.com/go-gl/glfw/v3.3/glfw"
 )
@@ -79,7 +79,7 @@ func main() {
 		}
 	}
 
-	app, err := tray.New()
+	app, err := gui.New()
 	if err != nil {
 		log.Printf("fatal: %v", err)
 		os.Exit(1)

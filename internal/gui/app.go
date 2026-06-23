@@ -1,4 +1,4 @@
-package tray
+package gui
 
 import (
 	"context"
@@ -1864,10 +1864,37 @@ func (a *App) Run() error {
 				if a.splashWindow != nil {
 					a.splashWindow.Close()
 				}
-				dialog.ShowError(fmt.Errorf("Kritik Hata: FFmpeg bulunamadı. Uygulama çalıştırılamıyor.\nLog dosyalarını kontrol edin veya sisteminize FFmpeg yükleyin.\n\nHata: %v", err), a.window)
-				time.AfterFunc(5*time.Second, func() {
+
+				inst := getFFmpegInstallInstructions()
+
+				msgLabel := widget.NewLabel(inst.message)
+				msgLabel.Wrapping = fyne.TextWrapWord
+
+				var content *fyne.Container
+				if inst.command != "" {
+					cmdEntry := widget.NewEntry()
+					cmdEntry.SetText(inst.command)
+
+					copyBtn := widget.NewButtonWithIcon("Kopyala", theme.ContentCopyIcon(), func() {
+						a.window.Clipboard().SetContent(inst.command)
+					})
+
+					cmdRow := container.NewBorder(nil, nil, nil, copyBtn, cmdEntry)
+					content = container.NewVBox(msgLabel, cmdRow)
+				} else {
+					content = container.NewVBox(msgLabel)
+				}
+
+				footer := widget.NewLabel("Kurulumu tamamladıktan sonra uygulamayı tekrar başlatın.")
+				footer.TextStyle = fyne.TextStyle{Bold: true}
+
+				finalContent := container.NewVBox(content, widget.NewSeparator(), footer)
+
+				d := dialog.NewCustom("Eksik Bileşen (FFmpeg)", "Kapat", finalContent, a.window)
+				d.SetOnClosed(func() {
 					a.Quit()
 				})
+				d.Show()
 			})
 			return
 		}
@@ -1949,8 +1976,16 @@ func (a *App) Quit() {
 	if a.logger != nil {
 		_ = a.logger.Close()
 	}
-	a.fyneApp.Quit()
-	os.Exit(0)
+	
+	fyne.Do(func() {
+		a.fyneApp.Quit()
+	})
+	
+	// Allow event loop to terminate, fallback to os.Exit
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		os.Exit(0)
+	}()
 }
 
 func (a *App) statusLoop() {
@@ -2093,4 +2128,66 @@ func restartApp() {
 		fmt.Printf("Failed to restart app: %v\n", err)
 	}
 	os.Exit(0)
+}
+
+type installInstruction struct {
+	message string
+	command string
+}
+
+func getFFmpegInstallInstructions() installInstruction {
+	if runtime.GOOS == "windows" {
+		return installInstruction{
+			message: "Lütfen uygulamanın tam yüklendiğinden emin olun veya sisteminize FFmpeg yükleyip yolunu ayarlarda belirtin.",
+			command: "",
+		}
+	}
+	if runtime.GOOS == "darwin" {
+		return installInstruction{
+			message: "macOS için FFmpeg yüklemek üzere terminalde şu komutu çalıştırabilirsiniz:",
+			command: "brew install ffmpeg",
+		}
+	}
+
+	distro := "unknown"
+	if data, err := os.ReadFile("/etc/os-release"); err == nil {
+		content := strings.ToLower(string(data))
+		if strings.Contains(content, "ubuntu") || strings.Contains(content, "debian") || strings.Contains(content, "mint") || strings.Contains(content, "pop") || strings.Contains(content, "kali") {
+			distro = "apt"
+		} else if strings.Contains(content, "fedora") || strings.Contains(content, "centos") || strings.Contains(content, "rhel") || strings.Contains(content, "rocky") || strings.Contains(content, "alma") {
+			distro = "dnf"
+		} else if strings.Contains(content, "arch") || strings.Contains(content, "manjaro") || strings.Contains(content, "endeavour") || strings.Contains(content, "garuda") {
+			distro = "pacman"
+		} else if strings.Contains(content, "suse") || strings.Contains(content, "opensuse") {
+			distro = "zypper"
+		}
+	}
+
+	switch distro {
+	case "apt":
+		return installInstruction{
+			message: "Kullandığınız Linux dağıtımı (Ubuntu/Debian/Mint vb.) için FFmpeg yüklü değil.\nLütfen terminali açıp şu komutu çalıştırarak yükleyin:",
+			command: "sudo apt update && sudo apt install ffmpeg",
+		}
+	case "dnf":
+		return installInstruction{
+			message: "Kullandığınız Linux dağıtımı (Fedora/RHEL vb.) için FFmpeg yüklü değil.\nLütfen terminali açıp şu komutu çalıştırarak yükleyin:",
+			command: "sudo dnf install ffmpeg",
+		}
+	case "pacman":
+		return installInstruction{
+			message: "Kullandığınız Linux dağıtımı (Arch/Manjaro vb.) için FFmpeg yüklü değil.\nLütfen terminali açıp şu komutu çalıştırarak yükleyin:",
+			command: "sudo pacman -S ffmpeg",
+		}
+	case "zypper":
+		return installInstruction{
+			message: "Kullandığınız Linux dağıtımı (openSUSE vb.) için FFmpeg yüklü değil.\nLütfen terminali açıp şu komutu çalıştırarak yükleyin:",
+			command: "sudo zypper install ffmpeg",
+		}
+	default:
+		return installInstruction{
+			message: "Sisteminizde FFmpeg bulunamadı.\nLütfen dağıtımınızın paket yöneticisini kullanarak 'ffmpeg' paketini yükleyin.",
+			command: "",
+		}
+	}
 }
