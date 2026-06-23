@@ -38,8 +38,11 @@ type CameraSource struct {
 
 // SavedLayout stores a named layout with full camera+source information.
 type SavedLayout struct {
-	Name    string         `json:"name"`
-	Cameras []CameraSource `json:"cameras"`
+	Name         string         `json:"name"`
+	Cameras      []CameraSource `json:"cameras"`
+	WindowWidth  int            `json:"window_width,omitempty"`
+	WindowHeight int            `json:"window_height,omitempty"`
+	SplitOffsets []float64      `json:"split_offsets,omitempty"`
 }
 
 // Config holds the application configuration.
@@ -68,6 +71,11 @@ type Config struct {
 	SavedLayouts     []SavedLayout  `json:"saved_layouts"`
 	ActiveLayoutName string         `json:"active_layout_name"`
 	RTSPServerCamera string         `json:"rtsp_server_camera"` // camera ID whose stream is served over HTTP
+
+	// Layout size and split values
+	WindowWidth  int            `json:"window_width,omitempty"`
+	WindowHeight int            `json:"window_height,omitempty"`
+	SplitOffsets []float64      `json:"split_offsets,omitempty"`
 
 	// Legacy field for backward compat migration (not persisted in new configs)
 	legacyRTSPURL string

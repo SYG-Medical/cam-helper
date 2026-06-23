@@ -83,11 +83,23 @@ type App struct {
 	diskBannerText  *canvas.Text
 	diskMonitorStop chan struct{}
 
+	// Status bar elements
+	statusBarLabel     *canvas.Text
+	recordingTimeLabel *canvas.Text
+	statusBarContainer *fyne.Container
+
+	// Layout drawer elements
+	drawerPanel         *fyne.Container
+	layoutListContainer *fyne.Container
+	layoutsRef          *widget.Button // for spotlight tutorials
+	drawerVisible       bool
+
 	shownUSBError map[string]bool
 }
 
 func New() (*App, error) {
 	a := app.NewWithID("com.syg.nystavision")
+	a.Settings().SetTheme(&SYGMedicalTheme{}) // Apply theme before creating any windows or splash screen
 	w := a.NewWindow("NystaVision") // Placeholder title, updated dynamically on load
 
 	appObj := &App{
@@ -101,24 +113,14 @@ func New() (*App, error) {
 	if drv, ok := a.Driver().(desktop.Driver); ok {
 		splash = drv.CreateSplashWindow()
 
-		// Premium white background matching the logo's white background
-		bg := canvas.NewRectangle(color.RGBA{R: 255, G: 255, B: 255, A: 255})
+		// White background splash screen for a clean, professional look
+		bg := canvas.NewRectangle(color.White)
 
 		// Logo image
 		logoRes := fyne.NewStaticResource("logo.png", logoData)
 		logoImg := canvas.NewImageFromResource(logoRes)
 		logoImg.FillMode = canvas.ImageFillContain
 		logoImg.SetMinSize(fyne.NewSize(280, 111))
-
-		// Title and Subtitle
-		title := canvas.NewText("NystaVision", color.RGBA{R: 15, G: 23, B: 42, A: 255}) // Slate 900
-		title.TextSize = 26
-		title.TextStyle = fyne.TextStyle{Bold: true}
-		title.Alignment = fyne.TextAlignCenter
-
-		subtitle := canvas.NewText("Virtual Camera Agent", color.RGBA{R: 100, G: 116, B: 139, A: 255}) // Slate 500
-		subtitle.TextSize = 12
-		subtitle.Alignment = fyne.TextAlignCenter
 
 		// Infinite progress spinner for modern loading look
 		progress := widget.NewProgressBarInfinite()
@@ -128,13 +130,10 @@ func New() (*App, error) {
 		progressPadding.SetMinSize(fyne.NewSize(60, 0))
 		progressWrapper := container.NewBorder(nil, nil, progressPadding, progressPadding, progress)
 
-		// Vertical Box layout for elements
+		// Vertical Box layout for elements (centered logo + progress bar)
 		contentVBox := container.NewVBox(
 			layout.NewSpacer(),
 			container.NewCenter(logoImg),
-			layout.NewSpacer(),
-			title,
-			subtitle,
 			layout.NewSpacer(),
 			progressWrapper,
 			layout.NewSpacer(),
@@ -146,7 +145,7 @@ func New() (*App, error) {
 		)
 
 		splash.SetContent(splashContent)
-		splash.Resize(fyne.NewSize(420, 320))
+		splash.Resize(fyne.NewSize(420, 300))
 		splash.Show()
 
 		appObj.splashWindow = splash
@@ -164,40 +163,95 @@ func getCameraOrder(cameras []config.CameraSource) []string {
 }
 
 func (a *App) setupUI() {
-	a.window.Resize(fyne.NewSize(960, 640))
+	width := 960
+	height := 640
+	if a.cfg.WindowWidth > 100 && a.cfg.WindowHeight > 100 {
+		width = a.cfg.WindowWidth
+		height = a.cfg.WindowHeight
+	}
+	a.window.Resize(fyne.NewSize(float32(width), float32(height)))
 	a.window.SetCloseIntercept(a.handleClose)
 
-	// Status label
+	// Status label (for window title updates)
 	a.statusLabel = widget.NewLabelWithStyle(i18n.T("title_app"), fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
 
-	// Build toolbar
+	// Build toolbar with card background
 	toolbar := a.buildToolbar()
+	toolbarBg := canvas.NewRectangle(colorCardSurface)
+	toolbarBg.CornerRadius = 8
+	toolbarCard := container.NewStack(toolbarBg, container.NewPadded(toolbar))
+
+	// Build status bar
+	a.buildStatusBar()
 
 	// Build camera grid
 	a.buildCameraGrid()
 	a.refreshCameraDropdowns()
 
-	// Main layout: toolbar on top, grid fills the rest
-	content := container.NewBorder(
-		container.NewVBox(toolbar, widget.NewSeparator()),
-		nil, nil, nil,
+	// Build layout drawer
+	a.buildLayoutDrawer()
+
+	// Content area: toolbar on top, status bar on bottom, camera grid in center
+	mainContent := container.NewBorder(
+		container.NewVBox(toolbarCard),
+		a.statusBarContainer,
+		nil, nil,
 		a.gridContainer,
 	)
 
+	// Final layout: drawerPanel on the right (full height), mainContent fills the rest
+	content := container.NewBorder(
+		nil, nil,
+		nil, a.drawerPanel, // Right: drawer panel spans full height
+		mainContent,
+	)
+
 	a.window.SetContent(content)
+
+	// Apply split offsets on startup if we have saved ones
+	if len(a.cfg.SplitOffsets) > 0 {
+		ApplySplitOffsets(a.cameraGrid, a.cfg.SplitOffsets)
+	}
 
 	// Start status update loop
 	go a.statusLoop()
 }
 
+func (a *App) buildStatusBar() {
+	// Status bar background
+	statusBarBgColor := colorCardSurface
+	statusBarBgColor.A = 200
+	statusBarBg := canvas.NewRectangle(statusBarBgColor)
+	statusBarBg.CornerRadius = 6
+
+	// Left: camera status
+	a.statusBarLabel = canvas.NewText("0/0", color.NRGBA{R: 236, G: 240, B: 241, A: 255})
+	a.statusBarLabel.TextSize = 12
+	a.statusBarLabel.TextStyle = fyne.TextStyle{Bold: true}
+
+	// Right: recording timer (hidden by default)
+	a.recordingTimeLabel = canvas.NewText("", color.NRGBA{R: 231, G: 76, B: 60, A: 255}) // Red Critical
+	a.recordingTimeLabel.TextSize = 12
+	a.recordingTimeLabel.TextStyle = fyne.TextStyle{Bold: true}
+	a.recordingTimeLabel.Alignment = fyne.TextAlignTrailing
+
+	statusContent := container.NewBorder(
+		nil, nil,
+		container.NewPadded(a.statusBarLabel),
+		container.NewPadded(a.recordingTimeLabel),
+	)
+
+	a.statusBarContainer = container.NewStack(statusBarBg, statusContent)
+}
+
 func (a *App) buildToolbar() *fyne.Container {
-	// Add camera button
-	a.addBtn = widget.NewButtonWithIcon("", theme.ContentAddIcon(), func() {
+	// Add camera button — with label
+	a.addBtn = widget.NewButtonWithIcon(i18n.T("btn_toolbar_add"), theme.ContentAddIcon(), func() {
 		a.showAddCameraDialog()
 	})
 
-	// Remove camera button
-	removeBtn := widget.NewButtonWithIcon("", theme.ContentRemoveIcon(), func() {
+	// Remove camera button — with label
+	removeBtn := widget.NewButtonWithIcon(i18n.T("btn_toolbar_remove"), theme.ContentRemoveIcon(), func() {
 		a.removeSelectedCamera()
 	})
 
@@ -219,25 +273,21 @@ func (a *App) buildToolbar() *fyne.Container {
 	})
 	a.settingsRef = settingsBtn
 
-	// Save layout button
-	saveLayoutBtn := widget.NewButtonWithIcon("", theme.DocumentSaveIcon(), func() {
-		a.showSaveLayoutDialog()
+	// Layouts drawer toggle button — with label
+	layoutsBtn := widget.NewButtonWithIcon(i18n.T("btn_layouts"), theme.MenuIcon(), func() {
+		a.toggleLayoutDrawer()
 	})
-
-	// Load layout button
-	loadLayoutBtn := widget.NewButtonWithIcon("", theme.FolderOpenIcon(), func() {
-		a.showLoadLayoutDialog()
-	})
+	a.layoutsRef = layoutsBtn
 
 	// Help/Tutorial button
 	helpBtn := widget.NewButtonWithIcon("", theme.QuestionIcon(), func() {
 		a.showTutorial()
 	})
 
-	// Layout: [+][-] | [start/stop] | [record] | [settings][save][load] [?]
+	// Layout: [+ Ekle] [- Sil] | [▶ Tümünü Başlat] [⏺ Kayıt] | [⚙] [?] | [Düzenler]
 	leftGroup := container.NewHBox(a.addBtn, removeBtn)
 	middleGroup := container.NewHBox(a.startStopAllBtn, widget.NewSeparator(), a.recordBtn)
-	rightGroup := container.NewHBox(widget.NewSeparator(), settingsBtn, saveLayoutBtn, loadLayoutBtn, widget.NewSeparator(), helpBtn)
+	rightGroup := container.NewHBox(widget.NewSeparator(), settingsBtn, helpBtn, widget.NewSeparator(), layoutsBtn)
 
 	return container.NewHBox(leftGroup, middleGroup, rightGroup)
 }
@@ -405,7 +455,13 @@ func (a *App) handleSourceSelectionChanged(cameraID string, selectedVal string, 
 		if dev, ok := webcamMap[selectedVal]; ok {
 			cam.Enabled = true
 			cam.Type = "webcam"
-			cam.Device = dev
+			if cam.Device != dev {
+				cam.Device = dev
+				cam.Width = 0
+				cam.Height = 0
+				cam.FPS = 0
+				cam.PixelFormat = ""
+			}
 
 			for i := range a.cfg.Cameras {
 				if i != camIdx && a.cfg.Cameras[i].Enabled && a.cfg.Cameras[i].Type == "webcam" && a.cfg.Cameras[i].Device == dev {
@@ -739,7 +795,7 @@ func (a *App) showAddCameraDialog() {
 		return
 	}
 	if len(a.cfg.Cameras) >= config.MaxCameras {
-		dialog.ShowInformation(i18n.T("err_limit"), fmt.Sprintf(i18n.T("err_camera_limit"), config.MaxCameras), a.window)
+		a.fyneApp.SendNotification(fyne.NewNotification(i18n.T("err_limit"), fmt.Sprintf(i18n.T("err_camera_limit"), config.MaxCameras)))
 		return
 	}
 
@@ -857,12 +913,12 @@ func (a *App) removeSelectedCamera() {
 		return
 	}
 	if len(a.cfg.Cameras) <= config.MinCameras {
-		dialog.ShowInformation(i18n.T("err_limit"), i18n.T("msg_min_cameras", config.MinCameras), a.window)
+		a.fyneApp.SendNotification(fyne.NewNotification(i18n.T("err_limit"), i18n.T("msg_min_cameras", config.MinCameras)))
 		return
 	}
 
 	if a.selectedCamera == "" {
-		dialog.ShowInformation(i18n.T("err_selection"), i18n.T("msg_select_to_delete"), a.window)
+		a.fyneApp.SendNotification(fyne.NewNotification(i18n.T("err_selection"), i18n.T("msg_select_to_delete")))
 		return
 	}
 
@@ -910,7 +966,7 @@ func (a *App) blockWhileRecording() bool {
 	recording := a.isRecording
 	a.mu.Unlock()
 	if recording {
-		dialog.ShowInformation(i18n.T("record_locked_title"), i18n.T("record_locked_msg"), a.window)
+		a.fyneApp.SendNotification(fyne.NewNotification(i18n.T("record_locked_title"), i18n.T("record_locked_msg")))
 	}
 	return recording
 }
@@ -1035,7 +1091,7 @@ func (a *App) proceedWithRecording(cameras []stream.CameraRecording, cols, rows 
 			a.recordBtn.Importance = widget.DangerImportance
 			a.recordBtn.Refresh()
 
-			// Start timer display
+			// Start timer display in status bar
 			a.recordTimer = time.NewTicker(time.Second)
 			go func() {
 				for range a.recordTimer.C {
@@ -1047,8 +1103,10 @@ func (a *App) proceedWithRecording(cameras []stream.CameraRecording, cols, rows 
 					}
 					elapsed := time.Since(a.recordStart).Truncate(time.Second)
 					fyne.Do(func() {
-						a.recordBtn.SetText(i18n.T("btn_stop_with_time", elapsed))
-						a.recordBtn.Refresh()
+						if a.recordingTimeLabel != nil {
+							a.recordingTimeLabel.Text = i18n.T("lbl_status_bar_rec", elapsed)
+							a.recordingTimeLabel.Refresh()
+						}
 					})
 				}
 			}()
@@ -1261,12 +1319,12 @@ func (a *App) initDiskBanner() {
 		return
 	}
 
-	a.diskBannerBg = canvas.NewRectangle(color.RGBA{R: 230, G: 126, B: 34, A: 220})
-	a.diskBannerBg.CornerRadius = 4
-	a.diskBannerText = canvas.NewText("", color.White)
+	a.diskBannerBg = canvas.NewRectangle(color.NRGBA{R: 243, G: 156, B: 18, A: 200}) // Amber Warning
+	a.diskBannerBg.CornerRadius = 8
+	a.diskBannerText = canvas.NewText("", color.NRGBA{R: 236, G: 240, B: 241, A: 255}) // Text Primary
 	a.diskBannerText.TextStyle = fyne.TextStyle{Bold: true}
 	a.diskBannerText.Alignment = fyne.TextAlignCenter
-	a.diskBannerText.TextSize = 14
+	a.diskBannerText.TextSize = 13
 
 	textContainer := container.NewPadded(a.diskBannerText)
 	bannerStack := container.NewStack(a.diskBannerBg, textContainer)
@@ -1288,10 +1346,10 @@ func (a *App) updateDiskBanner(minutes float64) {
 		return
 	}
 	if minutes < 3.0 {
-		a.diskBannerBg.FillColor = color.RGBA{R: 231, G: 76, B: 60, A: 220} // Red
+		a.diskBannerBg.FillColor = color.NRGBA{R: 231, G: 76, B: 60, A: 200} // Red Critical
 		a.diskBannerText.Text = fmt.Sprintf(i18n.T("disk_live_critical"), minutes)
 	} else {
-		a.diskBannerBg.FillColor = color.RGBA{R: 230, G: 126, B: 34, A: 220} // Orange
+		a.diskBannerBg.FillColor = color.NRGBA{R: 243, G: 156, B: 18, A: 200} // Amber Warning
 		a.diskBannerText.Text = fmt.Sprintf(i18n.T("disk_live_warning"), minutes)
 	}
 	a.diskBannerBg.Refresh()
@@ -1321,6 +1379,12 @@ func (a *App) stopRecording() {
 		a.recordBtn.Icon = theme.MediaRecordIcon()
 		a.recordBtn.Importance = widget.MediumImportance
 		a.recordBtn.Refresh()
+
+		// Clear recording timer in status bar
+		if a.recordingTimeLabel != nil {
+			a.recordingTimeLabel.Text = ""
+			a.recordingTimeLabel.Refresh()
+		}
 	})
 	if session == nil {
 		return
@@ -1573,6 +1637,300 @@ func (a *App) showSettingsDialog() {
 
 // --- Layout Save/Load ---
 
+// --- Layout Save/Load & Drawer System ---
+
+func CollectSplitOffsets(o fyne.CanvasObject) []float64 {
+	var offsets []float64
+	var traverse func(fyne.CanvasObject)
+	traverse = func(obj fyne.CanvasObject) {
+		if obj == nil {
+			return
+		}
+		if split, ok := obj.(*container.Split); ok {
+			offsets = append(offsets, split.Offset)
+			traverse(split.Leading)
+			traverse(split.Trailing)
+		} else if co, ok := obj.(*fyne.Container); ok {
+			for _, child := range co.Objects {
+				traverse(child)
+			}
+		}
+	}
+	traverse(o)
+	return offsets
+}
+
+func ApplySplitOffsets(o fyne.CanvasObject, offsets []float64) int {
+	if len(offsets) == 0 {
+		return 0
+	}
+	idx := 0
+	var traverse func(fyne.CanvasObject)
+	traverse = func(obj fyne.CanvasObject) {
+		if obj == nil || idx >= len(offsets) {
+			return
+		}
+		if split, ok := obj.(*container.Split); ok {
+			if idx < len(offsets) {
+				split.Offset = offsets[idx]
+				idx++
+				split.Refresh()
+			}
+			traverse(split.Leading)
+			traverse(split.Trailing)
+		} else if co, ok := obj.(*fyne.Container); ok {
+			for _, child := range co.Objects {
+				traverse(child)
+			}
+		}
+	}
+	traverse(o)
+	return idx
+}
+
+func (a *App) saveWindowLayoutToConfig() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.cfg == nil || a.window == nil {
+		return
+	}
+	size := a.window.Canvas().Size()
+	if size.Width > 100 && size.Height > 100 {
+		a.cfg.WindowWidth = int(size.Width)
+		a.cfg.WindowHeight = int(size.Height)
+	}
+	a.cfg.SplitOffsets = CollectSplitOffsets(a.cameraGrid)
+	_ = config.Save(*a.cfg, a.cfgPath)
+}
+
+func (a *App) buildLayoutDrawer() {
+	drawerBg := canvas.NewRectangle(colorCardSurface)
+
+	drawerSpacer := canvas.NewRectangle(color.Transparent)
+	drawerSpacer.SetMinSize(fyne.NewSize(240, 0))
+
+	// Title
+	titleLabel := canvas.NewText(i18n.T("btn_layouts"), colorTextPrimary)
+	titleLabel.TextSize = 15
+	titleLabel.TextStyle = fyne.TextStyle{Bold: true}
+
+	closeBtn := widget.NewButtonWithIcon("", theme.CancelIcon(), func() {
+		a.toggleLayoutDrawer()
+	})
+	closeBtn.Importance = widget.LowImportance
+
+	header := container.NewBorder(nil, nil, nil, closeBtn, container.NewPadded(titleLabel))
+
+	a.layoutListContainer = container.NewVBox()
+	scroll := container.NewVScroll(a.layoutListContainer)
+
+	saveBtn := widget.NewButtonWithIcon(i18n.T("layout_save_btn"), theme.DocumentSaveIcon(), func() {
+		a.showSaveLayoutDialog()
+	})
+	saveBtn.Importance = widget.HighImportance
+
+	drawerContent := container.NewBorder(
+		container.NewVBox(header, widget.NewSeparator()),
+		container.NewVBox(widget.NewSeparator(), container.NewPadded(saveBtn)),
+		nil, nil,
+		scroll,
+	)
+
+	a.drawerPanel = container.NewStack(drawerBg, drawerSpacer, drawerContent)
+	a.drawerPanel.Hide()
+	a.drawerVisible = false
+}
+
+func (a *App) refreshLayoutList() {
+	if a.layoutListContainer == nil {
+		return
+	}
+	a.layoutListContainer.Objects = nil
+
+	a.mu.Lock()
+	layouts := make([]config.SavedLayout, len(a.cfg.SavedLayouts))
+	copy(layouts, a.cfg.SavedLayouts)
+	activeName := a.cfg.ActiveLayoutName
+	a.mu.Unlock()
+
+	if len(layouts) == 0 {
+		emptyLabel := widget.NewLabel(i18n.T("layout_empty"))
+		emptyLabel.Alignment = fyne.TextAlignCenter
+		a.layoutListContainer.Add(emptyLabel)
+		a.layoutListContainer.Refresh()
+		return
+	}
+
+	for _, l := range layouts {
+		layoutName := l.Name
+
+		// Miniature silhouette of the grid layout shape
+		gridCols, gridRows := ui.CalculateGrid(len(l.Cameras))
+		miniGrid := container.NewGridWithColumns(gridCols)
+		totalCells := gridCols * gridRows
+		for cIdx := 0; cIdx < totalCells; cIdx++ {
+			var cellColor color.Color = color.Transparent
+			if cIdx < len(l.Cameras) {
+				cam := l.Cameras[cIdx]
+				if cam.Enabled {
+					cellColor = color.NRGBA{R: 46, G: 134, B: 193, A: 160} // Semi-transparent Medical Blue
+				} else {
+					cellColor = color.NRGBA{R: 70, G: 80, B: 90, A: 255} // Dark Gray-Blue
+				}
+			}
+			rect := canvas.NewRectangle(cellColor)
+			rect.SetMinSize(fyne.NewSize(12, 10))
+			rect.StrokeWidth = 1
+			rect.StrokeColor = color.NRGBA{R: 12, G: 15, B: 19, A: 120} // subtle divider
+			rect.CornerRadius = 2
+			miniGrid.Add(rect)
+		}
+
+		miniGridSpacer := canvas.NewRectangle(color.Transparent)
+		miniGridSpacer.SetMinSize(fyne.NewSize(48, 36))
+		miniGridWrapper := container.NewStack(miniGridSpacer, container.NewCenter(miniGrid))
+
+		// Smaller layout name and camera count texts
+		var nameColor color.Color = colorTextPrimary
+		if layoutName == activeName {
+			nameColor = colorMedicalBlue
+		}
+		nameText := canvas.NewText(layoutName, nameColor)
+		nameText.TextSize = 12
+		nameText.TextStyle = fyne.TextStyle{Bold: true}
+
+		infoText := canvas.NewText(fmt.Sprintf(i18n.T("lbl_camera_count"), len(l.Cameras)), colorTextSecondary)
+		infoText.TextSize = 9
+
+		// Stack texts vertically
+		textCol := container.NewVBox(nameText, infoText)
+
+		// Read closure-safe variables
+		lname := layoutName
+
+		loadBtn := widget.NewButtonWithIcon("", theme.FolderOpenIcon(), func() {
+			a.loadLayoutByName(lname)
+		})
+		loadBtn.Importance = widget.MediumImportance
+
+		deleteBtn := widget.NewButtonWithIcon("", theme.DeleteIcon(), func() {
+			a.deleteLayoutByName(lname)
+		})
+		deleteBtn.Importance = widget.DangerImportance
+
+		btnRow := container.NewHBox(loadBtn, deleteBtn)
+
+		// Layout content: silhouette on left, buttons on right, text in center
+		itemContent := container.NewBorder(nil, nil, miniGridWrapper, btnRow, container.NewCenter(textCol))
+
+		itemBg := canvas.NewRectangle(colorInputSurface)
+		itemBg.CornerRadius = 6
+
+		itemCard := container.NewStack(itemBg, container.NewPadded(itemContent))
+
+		a.layoutListContainer.Add(itemCard)
+	}
+	a.layoutListContainer.Refresh()
+}
+
+func (a *App) toggleLayoutDrawer() {
+	a.mu.Lock()
+	a.drawerVisible = !a.drawerVisible
+	visible := a.drawerVisible
+	a.mu.Unlock()
+
+	if visible {
+		a.refreshLayoutList()
+		a.drawerPanel.Show()
+	} else {
+		a.drawerPanel.Hide()
+	}
+	a.window.Content().Refresh()
+}
+
+func (a *App) loadLayoutByName(name string) {
+	if a.blockWhileRecording() {
+		return
+	}
+	a.mu.Lock()
+	idx := -1
+	for i, l := range a.cfg.SavedLayouts {
+		if l.Name == name {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		a.mu.Unlock()
+		return
+	}
+	loadedLayout := a.cfg.SavedLayouts[idx]
+	a.cfg.Cameras = make([]config.CameraSource, len(loadedLayout.Cameras))
+	copy(a.cfg.Cameras, loadedLayout.Cameras)
+	a.cfg.ActiveLayoutName = loadedLayout.Name
+
+	if loadedLayout.WindowWidth > 100 && loadedLayout.WindowHeight > 100 {
+		a.cfg.WindowWidth = loadedLayout.WindowWidth
+		a.cfg.WindowHeight = loadedLayout.WindowHeight
+	}
+	if len(loadedLayout.SplitOffsets) > 0 {
+		a.cfg.SplitOffsets = make([]float64, len(loadedLayout.SplitOffsets))
+		copy(a.cfg.SplitOffsets, loadedLayout.SplitOffsets)
+	}
+
+	_ = config.Save(*a.cfg, a.cfgPath)
+	a.mu.Unlock()
+
+	a.multiManager.Close()
+	a.multiManager = stream.NewMultiManager(a.cfg, a.cfgPath, a.logger)
+
+	a.rebuildGrid()
+
+	if loadedLayout.WindowWidth > 100 && loadedLayout.WindowHeight > 100 {
+		a.window.Resize(fyne.NewSize(float32(loadedLayout.WindowWidth), float32(loadedLayout.WindowHeight)))
+	}
+	if len(loadedLayout.SplitOffsets) > 0 {
+		ApplySplitOffsets(a.cameraGrid, loadedLayout.SplitOffsets)
+	}
+
+	if a.cfg.AutoStart {
+		a.multiManager.StartAll()
+	}
+
+	a.refreshLayoutList()
+}
+
+func (a *App) deleteLayoutByName(name string) {
+	if a.blockWhileRecording() {
+		return
+	}
+
+	dialog.ShowConfirm(i18n.T("layout_delete_confirm_title"), fmt.Sprintf(i18n.T("layout_delete_confirm_msg"), name), func(yes bool) {
+		if !yes {
+			return
+		}
+
+		a.mu.Lock()
+		idx := -1
+		for i, l := range a.cfg.SavedLayouts {
+			if l.Name == name {
+				idx = i
+				break
+			}
+		}
+		if idx >= 0 {
+			a.cfg.SavedLayouts = append(a.cfg.SavedLayouts[:idx], a.cfg.SavedLayouts[idx+1:]...)
+			if a.cfg.ActiveLayoutName == name {
+				a.cfg.ActiveLayoutName = ""
+			}
+			_ = config.Save(*a.cfg, a.cfgPath)
+		}
+		a.mu.Unlock()
+
+		a.refreshLayoutList()
+	}, a.window)
+}
+
 func (a *App) showSaveLayoutDialog() {
 	if a.blockWhileRecording() {
 		return
@@ -1587,9 +1945,20 @@ func (a *App) showSaveLayoutDialog() {
 			return
 		}
 
+		size := a.window.Canvas().Size()
+		var wWidth, wHeight int
+		if size.Width > 100 && size.Height > 100 {
+			wWidth = int(size.Width)
+			wHeight = int(size.Height)
+		}
+		offsets := CollectSplitOffsets(a.cameraGrid)
+
 		savedLayout := config.SavedLayout{
-			Name:    nameEntry.Text,
-			Cameras: make([]config.CameraSource, len(a.cfg.Cameras)),
+			Name:         nameEntry.Text,
+			Cameras:      make([]config.CameraSource, len(a.cfg.Cameras)),
+			WindowWidth:  wWidth,
+			WindowHeight: wHeight,
+			SplitOffsets: offsets,
 		}
 		copy(savedLayout.Cameras, a.cfg.Cameras)
 
@@ -1608,75 +1977,32 @@ func (a *App) showSaveLayoutDialog() {
 		a.cfg.ActiveLayoutName = nameEntry.Text
 		_ = config.Save(*a.cfg, a.cfgPath)
 
-		dialog.ShowInformation(i18n.T("layout_saved_title"), fmt.Sprintf(i18n.T("layout_saved"), nameEntry.Text), a.window)
+		a.fyneApp.SendNotification(fyne.NewNotification(i18n.T("layout_saved_title"), fmt.Sprintf(i18n.T("layout_saved"), nameEntry.Text)))
+		a.refreshLayoutList()
 	}, a.window)
 }
 
 func (a *App) showLoadLayoutDialog() {
-	if a.blockWhileRecording() {
-		return
-	}
-	if len(a.cfg.SavedLayouts) == 0 {
-		dialog.ShowInformation(i18n.T("layout_empty_title"), i18n.T("layout_empty"), a.window)
-		return
-	}
-
-	layoutNames := make([]string, len(a.cfg.SavedLayouts))
-	for i, l := range a.cfg.SavedLayouts {
-		layoutNames[i] = fmt.Sprintf(i18n.T("layout_cameras"), l.Name, len(l.Cameras))
-	}
-
-	layoutSelect := widget.NewSelect(layoutNames, nil)
-	if len(layoutNames) > 0 {
-		layoutSelect.SetSelected(layoutNames[0])
-	}
-
-	dialog.ShowForm(i18n.T("layout_load_title"), i18n.T("layout_load_btn"), i18n.T("btn_cancel"), []*widget.FormItem{
-		widget.NewFormItem(i18n.T("layout_select_lbl"), layoutSelect),
-	}, func(ok bool) {
-		if !ok {
-			return
-		}
-
-		idx := -1
-		for i, name := range layoutNames {
-			if name == layoutSelect.Selected {
-				idx = i
-				break
-			}
-		}
-		if idx < 0 {
-			return
-		}
-
-		loadedLayout := a.cfg.SavedLayouts[idx]
-
-		a.multiManager.Close()
-
-		a.mu.Lock()
-		a.cfg.Cameras = make([]config.CameraSource, len(loadedLayout.Cameras))
-		copy(a.cfg.Cameras, loadedLayout.Cameras)
-		a.cfg.ActiveLayoutName = loadedLayout.Name
-		_ = config.Save(*a.cfg, a.cfgPath)
-		a.mu.Unlock()
-
-		a.multiManager = stream.NewMultiManager(a.cfg, a.cfgPath, a.logger)
-		a.rebuildGrid()
-
-		if a.cfg.AutoStart {
-			a.multiManager.StartAll()
-		}
-	}, a.window)
+	a.toggleLayoutDrawer()
 }
 
 // --- Tutorial ---
 
 func (a *App) showTutorial() {
+	var firstPanel fyne.CanvasObject
+	a.mu.Lock()
+	if len(a.cameraOrder) > 0 {
+		firstPanel = a.cameraPanels[a.cameraOrder[0]]
+	}
+	a.mu.Unlock()
+
 	steps := []ui.TutorialStep{
 		{TargetWidget: nil, TitleKey: "tutorial_title_0", DescKey: "tutorial_desc_0"},
 		{TargetWidget: a.addBtn, TitleKey: "tutorial_title_1", DescKey: "tutorial_desc_1"},
 		{TargetWidget: a.startAllRef, TitleKey: "tutorial_title_2", DescKey: "tutorial_desc_2"},
 		{TargetWidget: a.recordBtn, TitleKey: "tutorial_title_3", DescKey: "tutorial_desc_3"},
+		{TargetWidget: a.layoutsRef, TitleKey: "tutorial_title_5", DescKey: "tutorial_desc_5"},
+		{TargetWidget: firstPanel, TitleKey: "tutorial_title_6", DescKey: "tutorial_desc_6"},
 		{TargetWidget: a.settingsRef, TitleKey: "tutorial_title_4", DescKey: "tutorial_desc_4"},
 	}
 
@@ -1966,6 +2292,8 @@ func (a *App) Run() error {
 }
 
 func (a *App) Quit() {
+	a.saveWindowLayoutToConfig() // Save window size and split position offsets to config on exit
+
 	a.mu.Lock()
 	a.isRecording = false
 	a.mu.Unlock()
@@ -2064,6 +2392,12 @@ func (a *App) statusLoop() {
 				a.statusLabel.SetText(fmt.Sprintf(i18n.T("lbl_status_rec"), runningTotal, total))
 			} else {
 				a.statusLabel.SetText(fmt.Sprintf(i18n.T("lbl_status"), runningTotal, total))
+			}
+
+			// Update status bar
+			if a.statusBarLabel != nil {
+				a.statusBarLabel.Text = fmt.Sprintf(i18n.T("lbl_status_bar"), runningTotal, total)
+				a.statusBarLabel.Refresh()
 			}
 		})
 	}

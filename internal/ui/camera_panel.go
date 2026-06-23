@@ -14,6 +14,18 @@ import (
 	"nystavision/internal/i18n"
 )
 
+// Brand colors matching the SYG Medical theme.
+var (
+	panelDarkSurface  = color.NRGBA{R: 12, G: 15, B: 19, A: 255}   // Deep blackish-gray (#0C0F13)
+	panelCardSurface  = color.NRGBA{R: 22, G: 27, B: 34, A: 255}   // Dark card surface (#161B22)
+	panelTextPrimary  = color.NRGBA{R: 236, G: 240, B: 241, A: 255} // #ECF0F1
+	panelMedicalBlue  = color.NRGBA{R: 46, G: 134, B: 193, A: 255}  // #2E86C1
+	panelFreshGreen   = color.NRGBA{R: 39, G: 174, B: 96, A: 255}   // #27AE60
+	panelAmberWarning = color.NRGBA{R: 243, G: 156, B: 18, A: 255}  // #F39C12
+	panelRedCritical  = color.NRGBA{R: 231, G: 76, B: 60, A: 255}   // #E74C3C
+	panelOverlayColor = color.NRGBA{R: 12, G: 15, B: 19, A: 180}   // Dark semi-transparent overlay
+)
+
 // CameraPanel represents a single camera view in the grid.
 type CameraPanel struct {
 	widget.BaseWidget
@@ -30,6 +42,8 @@ type CameraPanel struct {
 	stoppedText      *canvas.Text
 	stoppedContainer *fyne.Container
 	overlay          *fyne.Container
+	overlayBg        *canvas.Rectangle
+	panelBg          *canvas.Rectangle
 	content          *fyne.Container
 
 	mu      sync.Mutex
@@ -49,42 +63,51 @@ func NewCameraPanel(cameraID, cameraName string, onSelect func(string), onRightC
 		onRightClick: onRightClick,
 	}
 
-	// Create placeholder image
+	// Create placeholder image with dark surface color
 	placeholder := image.NewRGBA(image.Rect(0, 0, 320, 240))
-	// Fill with dark gray
 	for i := 0; i < len(placeholder.Pix); i += 4 {
-		placeholder.Pix[i] = 30    // R
-		placeholder.Pix[i+1] = 30  // G
-		placeholder.Pix[i+2] = 30  // B
-		placeholder.Pix[i+3] = 255 // A
+		placeholder.Pix[i] = panelDarkSurface.R
+		placeholder.Pix[i+1] = panelDarkSurface.G
+		placeholder.Pix[i+2] = panelDarkSurface.B
+		placeholder.Pix[i+3] = 255
 	}
 
 	cp.img = canvas.NewImageFromImage(placeholder)
 	cp.img.FillMode = canvas.ImageFillContain
 	cp.img.ScaleMode = canvas.ImageScaleFastest
 
-	cp.nameLabel = canvas.NewText(cameraName, color.White)
-	cp.nameLabel.TextSize = 14
+	// Camera name label
+	cp.nameLabel = canvas.NewText(cameraName, panelTextPrimary)
+	cp.nameLabel.TextSize = 13
 	cp.nameLabel.TextStyle = fyne.TextStyle{Bold: true}
 
 	// Status dot - red by default (not streaming)
-	cp.statusDot = canvas.NewCircle(color.RGBA{R: 200, G: 50, B: 50, A: 255})
+	cp.statusDot = canvas.NewCircle(panelRedCritical)
 	cp.statusDot.Resize(fyne.NewSize(10, 10))
 
-	// Overlay with name and status
-	cp.overlay = container.NewHBox(
+	// Glassmorphism overlay background for name area
+	cp.overlayBg = canvas.NewRectangle(panelOverlayColor)
+	cp.overlayBg.CornerRadius = 6
+
+	// Overlay with frosted background, name and status
+	overlayContent := container.NewHBox(
 		cp.statusDot,
 		cp.nameLabel,
+	)
+	cp.overlay = container.NewStack(
+		cp.overlayBg,
+		container.NewPadded(overlayContent),
 	)
 
 	// Selection border rectangle
 	cp.selectionRect = canvas.NewRectangle(color.Transparent)
 	cp.selectionRect.StrokeWidth = 3
 	cp.selectionRect.StrokeColor = color.Transparent
+	cp.selectionRect.CornerRadius = 8
 
-	// Stopped overlay
-	cp.stoppedRect = canvas.NewRectangle(color.RGBA{R: 0, G: 0, B: 0, A: 160})
-	cp.stoppedText = canvas.NewText(i18n.T("lbl_stopped"), color.White)
+	// Stopped overlay with glassmorphism
+	cp.stoppedRect = canvas.NewRectangle(panelOverlayColor)
+	cp.stoppedText = canvas.NewText(i18n.T("lbl_stopped"), panelTextPrimary)
 	cp.stoppedText.Alignment = fyne.TextAlignCenter
 	cp.stoppedText.TextSize = 16
 	cp.stoppedText.TextStyle = fyne.TextStyle{Bold: true}
@@ -93,6 +116,10 @@ func NewCameraPanel(cameraID, cameraName string, onSelect func(string), onRightC
 		container.NewCenter(cp.stoppedText),
 	)
 	cp.stoppedContainer.Hide()
+
+	// Panel background card
+	cp.panelBg = canvas.NewRectangle(panelCardSurface)
+	cp.panelBg.CornerRadius = 8
 
 	// Stack containing image, text overlay, stopped overlay, and selection border
 	previewStack := container.NewStack(
@@ -108,13 +135,18 @@ func NewCameraPanel(cameraID, cameraName string, onSelect func(string), onRightC
 	cp.sourceSelect = widget.NewSelect(nil, nil)
 	cp.sourceSelect.PlaceHolder = i18n.T("lbl_select_source")
 
-	// Combine: preview on top, select dropdown at the bottom
-	cp.content = container.NewBorder(
+	// Combine: panel background, preview on top, select dropdown at the bottom
+	innerContent := container.NewBorder(
 		nil,
 		cp.sourceSelect,
 		nil,
 		nil,
 		previewStack,
+	)
+
+	cp.content = container.NewStack(
+		cp.panelBg,
+		container.NewPadded(innerContent),
 	)
 
 	cp.ExtendBaseWidget(cp)
@@ -173,11 +205,11 @@ func (cp *CameraPanel) SetStatus(running bool, lastError string) {
 	hasError := lastError != ""
 	var c color.Color
 	if running && !hasError {
-		c = color.RGBA{R: 50, G: 200, B: 50, A: 255} // Green
+		c = panelFreshGreen // Green - active
 	} else if running && hasError {
-		c = color.RGBA{R: 230, G: 180, B: 30, A: 255} // Yellow
+		c = panelAmberWarning // Amber - warning
 	} else {
-		c = color.RGBA{R: 200, G: 50, B: 50, A: 255} // Red
+		c = panelRedCritical // Red - stopped
 	}
 	fyne.Do(func() {
 		cp.statusDot.FillColor = c
@@ -231,7 +263,7 @@ func (cp *CameraPanel) SetSelected(selected bool) {
 	cp.selected = selected
 	fyne.Do(func() {
 		if selected {
-			cp.selectionRect.StrokeColor = color.RGBA{R: 0, G: 150, B: 255, A: 255} // Blue border
+			cp.selectionRect.StrokeColor = panelMedicalBlue // Medical Blue border
 		} else {
 			cp.selectionRect.StrokeColor = color.Transparent
 		}
