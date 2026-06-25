@@ -68,6 +68,9 @@ func (p *PostProcessor) Process(
 	var files []string
 	var mu sync.Mutex
 	var firstErr error
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	
 	tracker := &progressTracker{
 		totalJobs:   len(cameras)*2 + 1,
@@ -97,6 +100,7 @@ func (p *PostProcessor) Process(
 				mu.Lock()
 				if firstErr == nil {
 					firstErr = fmt.Errorf("process camera %s: %w", camera.Name, err)
+					cancel()
 				}
 				mu.Unlock()
 			} else {
@@ -106,6 +110,7 @@ func (p *PostProcessor) Process(
 					mu.Lock()
 					if firstErr == nil {
 						firstErr = fmt.Errorf("align camera %s: %w", camera.Name, err)
+						cancel()
 					}
 					mu.Unlock()
 				} else {
@@ -120,7 +125,7 @@ func (p *PostProcessor) Process(
 	}
 	wg.Wait()
 
-	if ctx.Err() != nil {
+	if ctx.Err() != nil && firstErr == nil {
 		return ProcessResult{OutputDir: outDir, Files: files, Err: ctx.Err()}
 	}
 	if firstErr != nil {
@@ -161,7 +166,7 @@ func (p *PostProcessor) renderCamera(ctx context.Context, session RecordingSessi
 			continue
 		}
 		expectedDuration += segmentDuration
-		args = append(args, "-t", ffDuration(segmentDuration), "-i", segment.Path)
+		args = append(args, "-err_detect", "ignore_err", "-t", ffDuration(segmentDuration), "-i", segment.Path)
 		label := fmt.Sprintf("v%d", input)
 		filters = append(filters, fmt.Sprintf(
 			"[%d:v]scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2:black,fps=%d,setpts=PTS-STARTPTS,%s[%s]",
@@ -241,7 +246,7 @@ func (p *PostProcessor) renderAlignedCamera(ctx context.Context, session Recordi
 		if segmentDuration <= 10*time.Millisecond {
 			continue
 		}
-		args = append(args, "-t", ffDuration(segmentDuration), "-i", segment.Path)
+		args = append(args, "-err_detect", "ignore_err", "-t", ffDuration(segmentDuration), "-i", segment.Path)
 		label := fmt.Sprintf("v%d", input)
 		filters = append(filters, fmt.Sprintf(
 			"[%d:v]scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2:black,fps=%d,setpts=PTS-STARTPTS[%s]",
@@ -301,7 +306,7 @@ func (p *PostProcessor) renderGeneral(
 		if path == "" {
 			return fmt.Errorf("missing processed video for camera %s", camera.Name)
 		}
-		args = append(args, "-i", path)
+		args = append(args, "-err_detect", "ignore_err", "-i", path)
 		label := fmt.Sprintf("g%d", i)
 		filters = append(filters, fmt.Sprintf(
 			"[%d:v]scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2:black,fps=%d,setpts=PTS-STARTPTS[%s]",

@@ -1601,6 +1601,11 @@ func (a *App) showPatientNameDialog(session *stream.RecordingSession) {
 				// after all final MP4 files have been atomically completed.
 				if result.Err == nil {
 					_ = os.RemoveAll(session.TempDir)
+				} else {
+					for _, f := range result.Files {
+						_ = os.Remove(f)
+					}
+					_ = os.Remove(outDir)
 				}
 
 				fyne.Do(func() {
