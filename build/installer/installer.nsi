@@ -3,9 +3,9 @@
 !define COMPANY "SYG Medical"
 !define INSTALL_DIR "$PROGRAMFILES64\SYG Medical\NystaVision"
 
+!define MUI_ICON "..\\..\\internal\\tray\\resources\\icon.ico"
 !include "MUI2.nsh"
 
-!define MUI_ICON "..\..\internal\tray\resources\icon.ico"
 
 Name "${APP_NAME}"
 OutFile "..\\..\\dist\\${APP_NAME}-Setup.exe"
