@@ -3,7 +3,7 @@
 !define COMPANY "SYG Medical"
 !define INSTALL_DIR "$PROGRAMFILES64\SYG Medical\NystaVision"
 
-!define MUI_ICON "..\\..\\internal\\tray\\resources\\icon.ico"
+!define MUI_ICON "..\\..\\internal\\gui\\resources\\icon.ico"
 !include "MUI2.nsh"
 
 
@@ -31,7 +31,7 @@ Section "Main Application" SecMain
   SectionIn RO
   SetOutPath "$INSTDIR"
   File "..\\..\\out\\windows\\${APP_EXE}"
-  File "..\\..\\internal\\tray\\resources\\icon.ico"
+  File "..\\..\\internal\\gui\\resources\\icon.ico"
 
   # Bundle ffmpeg
   SetOutPath "$INSTDIR\\third_party\\ffmpeg"
