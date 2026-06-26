@@ -263,7 +263,8 @@ func (jq *JobQueue) processJob(ctx context.Context, job ProcessingJob) {
 			cb := jq.onProgress
 			jq.mu.Unlock()
 			if cb != nil {
-				cb(job.ID, p, JobStatusProcessing)
+				// individual cameras = 70% of work
+				cb(job.ID, p*70.0, JobStatusProcessing)
 			}
 		}
 	}()
@@ -276,6 +277,24 @@ func (jq *JobQueue) processJob(ctx context.Context, job ProcessingJob) {
 	result := jq.postProc.ProcessIndividualCameras(ctx, snap, cameras, job.PatientDir, progressCh)
 	close(progressCh)
 
+	var resultGen ProcessResult
+	if result.Err == nil || result.Err == context.Canceled {
+		progressChGen := make(chan float64, 10)
+		go func() {
+			for p := range progressChGen {
+				jq.mu.Lock()
+				cb := jq.onProgress
+				jq.mu.Unlock()
+				if cb != nil {
+					// general video = 30% of work
+					cb(job.ID, 70.0+p*30.0, JobStatusProcessing)
+				}
+			}
+		}()
+		resultGen = jq.postProc.ProcessGeneralOnly(ctx, snap, cameras, job.PatientDir, progressChGen, false)
+		close(progressChGen)
+	}
+
 	job.CompletedAt = time.Now()
 
 	if result.Err != nil && result.Err != context.Canceled {
@@ -284,7 +303,13 @@ func (jq *JobQueue) processJob(ctx context.Context, job ProcessingJob) {
 		if jq.logger != nil {
 			jq.logger.Printf("[job_queue] Job %s failed: %v", job.ID, result.Err)
 		}
-	} else if result.Err == context.Canceled {
+	} else if resultGen.Err != nil && resultGen.Err != context.Canceled {
+		job.Status = JobStatusFailed
+		job.Error = resultGen.Err.Error()
+		if jq.logger != nil {
+			jq.logger.Printf("[job_queue] Job %s failed at general video: %v", job.ID, resultGen.Err)
+		}
+	} else if result.Err == context.Canceled || resultGen.Err == context.Canceled {
 		// If cancelled, push back to queue or leave as pending
 		job.Status = JobStatusPending
 		_ = jq.saveJob(job)
@@ -295,13 +320,19 @@ func (jq *JobQueue) processJob(ctx context.Context, job ProcessingJob) {
 			jq.logger.Printf("[job_queue] Job %s completed successfully", job.ID)
 		}
 
-		// Update patient info with individual video files
+		// Update patient info with individual video files and HQ general video
 		info, err := LoadPatientInfo(job.PatientDir)
 		if err == nil {
 			for _, file := range result.Files {
 				info.Videos = append(info.Videos, VideoFile{
 					FileName: filepath.Base(file),
 					Type:     "camera",
+				})
+			}
+			for _, file := range resultGen.Files {
+				info.Videos = append(info.Videos, VideoFile{
+					FileName: filepath.Base(file),
+					Type:     "general",
 				})
 			}
 			_ = SavePatientInfo(job.PatientDir, info)

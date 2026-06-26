@@ -945,7 +945,7 @@ func (a *App) showAddCameraDialog() {
 		return
 	}
 	if len(a.cfg.Cameras) >= config.MaxCameras {
-		a.fyneApp.SendNotification(fyne.NewNotification(i18n.T("err_limit"), fmt.Sprintf(i18n.T("err_camera_limit"), config.MaxCameras)))
+		a.sendOSNotification(i18n.T("err_limit"), fmt.Sprintf(i18n.T("err_camera_limit"), config.MaxCameras))
 		return
 	}
 
@@ -1063,12 +1063,12 @@ func (a *App) removeSelectedCamera() {
 		return
 	}
 	if len(a.cfg.Cameras) <= config.MinCameras {
-		a.fyneApp.SendNotification(fyne.NewNotification(i18n.T("err_limit"), i18n.T("msg_min_cameras", config.MinCameras)))
+		a.sendOSNotification(i18n.T("err_limit"), i18n.T("msg_min_cameras", config.MinCameras))
 		return
 	}
 
 	if a.selectedCamera == "" {
-		a.fyneApp.SendNotification(fyne.NewNotification(i18n.T("err_selection"), i18n.T("msg_select_to_delete")))
+		a.sendOSNotification(i18n.T("err_selection"), i18n.T("msg_select_to_delete"))
 		return
 	}
 
@@ -1116,7 +1116,7 @@ func (a *App) blockWhileRecording() bool {
 	recording := a.isRecording
 	a.mu.Unlock()
 	if recording {
-		a.fyneApp.SendNotification(fyne.NewNotification(i18n.T("record_locked_title"), i18n.T("record_locked_msg")))
+		a.sendOSNotification(i18n.T("record_locked_title"), i18n.T("record_locked_msg"))
 	}
 	return recording
 }
@@ -1568,7 +1568,9 @@ func (a *App) stopRecording() {
 				done := make(chan struct{})
 
 				go func() {
-					result = a.postProc.ProcessGeneralOnly(ctx, session, actualPatientDir, progressCh)
+					snap := session.Snapshot()
+					cams := session.CameraList()
+					result = a.postProc.ProcessGeneralOnly(ctx, snap, cams, actualPatientDir, progressCh, true)
 					close(done)
 				}()
 
@@ -2167,7 +2169,7 @@ func (a *App) showSaveLayoutDialog() {
 		a.cfg.ActiveLayoutName = nameEntry.Text
 		_ = config.Save(*a.cfg, a.cfgPath)
 
-		a.fyneApp.SendNotification(fyne.NewNotification(i18n.T("layout_saved_title"), fmt.Sprintf(i18n.T("layout_saved"), nameEntry.Text)))
+		a.sendOSNotification(i18n.T("layout_saved_title"), fmt.Sprintf(i18n.T("layout_saved"), nameEntry.Text))
 		a.refreshLayoutList()
 	}, a.window)
 }
@@ -2336,12 +2338,7 @@ func (a *App) ShowAndFocus() {
 		a.window.RequestFocus()
 		log.Println("[App] window.Show() and RequestFocus() executed")
 
-		// Fallback notification for OS focus-stealing prevention
-		notification := fyne.NewNotification(
-			i18n.T("title_app"),
-			i18n.T("msg_already_running"),
-		)
-		a.fyneApp.SendNotification(notification)
+		a.sendOSNotification(i18n.T("title_app"), i18n.T("msg_already_running"))
 		log.Println("[App] Fallback notification sent")
 	})
 }
@@ -2454,9 +2451,9 @@ func (a *App) Run() error {
 				func(id string, status string) {
 					fyne.Do(func() {
 						if status == stream.JobStatusCompleted {
-							a.fyneApp.SendNotification(fyne.NewNotification(i18n.T("title_app"), i18n.T("record_processing")+" tamamlandı!"))
+							a.sendOSNotification(i18n.T("title_app"), i18n.T("record_processing")+" tamamlandı!")
 						} else if status == stream.JobStatusFailed {
-							a.fyneApp.SendNotification(fyne.NewNotification(i18n.T("title_app"), i18n.T("record_processing")+" başarısız!"))
+							a.sendOSNotification(i18n.T("title_app"), i18n.T("record_processing")+" başarısız!")
 						}
 						
 						if a.jobQueueLabel != nil {
@@ -2525,6 +2522,16 @@ func (a *App) Run() error {
 	return nil
 }
 
+func (a *App) sendOSNotification(title, message string) {
+	if runtime.GOOS == "linux" {
+		cmd := exec.Command("notify-send", "-t", "4000", title, message)
+		if err := cmd.Run(); err == nil {
+			return
+		}
+	}
+	a.fyneApp.SendNotification(fyne.NewNotification(title, message))
+}
+
 func (a *App) Quit() {
 	a.saveWindowLayoutToConfig() // Save window size and split position offsets to config on exit
 
@@ -2555,6 +2562,25 @@ func (a *App) Quit() {
 						if _, err := os.Stat(rawDir); err == nil {
 							_ = os.RemoveAll(rawDir)
 						}
+						
+						// Silme ve Yer Değiştirme Mantığı: Arka plan işi bitince Genel_Onizleme.mp4 dosyasını temizle
+						files, _ := filepath.Glob(filepath.Join(job.PatientDir, "Genel_Onizleme_*.mp4"))
+						for _, f := range files {
+							_ = os.Remove(f)
+						}
+						
+						// Remove Genel_Onizleme from PatientInfo.Videos if it exists
+						if pInfo, err := stream.LoadPatientInfo(job.PatientDir); err == nil {
+							var updatedVideos []stream.VideoFile
+							for _, v := range pInfo.Videos {
+								if !strings.HasPrefix(v.FileName, "Genel_Onizleme_") {
+									updatedVideos = append(updatedVideos, v)
+								}
+							}
+							pInfo.Videos = updatedVideos
+							_ = stream.SavePatientInfo(job.PatientDir, pInfo)
+						}
+
 						a.jobQueue.DeleteJob(job.ID)
 					}
 				}

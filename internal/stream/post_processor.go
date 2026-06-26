@@ -51,12 +51,12 @@ type ProcessResult struct {
 // grid video right away.
 func (p *PostProcessor) ProcessGeneralOnly(
 	ctx context.Context,
-	session *RecordingSession,
+	snapshot RecordingSessionSnapshot,
+	cameras []CameraRecording,
 	outDir string,
 	progress chan<- float64,
+	isPreview bool,
 ) ProcessResult {
-	snapshot := session.Snapshot()
-	cameras := session.CameraList()
 	if snapshot.EndedAt.IsZero() {
 		snapshot.EndedAt = time.Now()
 	}
@@ -72,8 +72,12 @@ func (p *PostProcessor) ProcessGeneralOnly(
 		progressOut: progress,
 	}
 
-	generalFile := filepath.Join(outDir, fmt.Sprintf("Genel_%s.mp4", timestamp))
-	if err := p.renderGeneralFromSegments(ctx, snapshot, cameras, generalFile, func(f float64) { tracker.updateJob(generalFile, f) }); err != nil {
+	fileName := fmt.Sprintf("Genel_%s.mp4", timestamp)
+	if isPreview {
+		fileName = fmt.Sprintf("Genel_Onizleme_%s.mp4", timestamp)
+	}
+	generalFile := filepath.Join(outDir, fileName)
+	if err := p.renderGeneralFromSegments(ctx, snapshot, cameras, generalFile, isPreview, func(f float64) { tracker.updateJob(generalFile, f) }); err != nil {
 		return ProcessResult{OutputDir: outDir, Err: fmt.Errorf("create general video: %w", err)}
 	}
 	tracker.finishJob(generalFile)
@@ -637,6 +641,7 @@ func (p *PostProcessor) renderGeneralFromSegments(
 	session RecordingSessionSnapshot,
 	cameras []CameraRecording,
 	outFile string,
+	isPreview bool,
 	onProgress func(float64),
 ) error {
 	duration := session.EndedAt.Sub(session.StartedAt)
@@ -653,8 +658,32 @@ func (p *PostProcessor) renderGeneralFromSegments(
 			maxFPS = fps
 		}
 	}
-	if maxFPS > 60 {
-		maxFPS = 60
+	
+	if isPreview {
+		if maxFPS > 30 {
+			maxFPS = 30
+		}
+		cols := session.Cols
+		if cols <= 0 {
+			cols = 1
+		}
+		
+		targetCamW := 1280 / cols
+		targetCamH := (targetCamW * 9) / 16
+		
+		if targetCamW%2 != 0 {
+			targetCamW--
+		}
+		if targetCamH%2 != 0 {
+			targetCamH--
+		}
+		
+		maxW = targetCamW
+		maxH = targetCamH
+	} else {
+		if maxFPS > 60 {
+			maxFPS = 60
+		}
 	}
 
 	args := []string{"-hide_banner", "-loglevel", "warning", "-stats"}
