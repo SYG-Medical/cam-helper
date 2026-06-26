@@ -50,6 +50,7 @@ type App struct {
 	logger       *logging.Logger
 	multiManager *stream.MultiManager
 	postProc     *stream.PostProcessor
+	jobQueue     *stream.JobQueue
 	mu           sync.Mutex
 
 	// UI elements
@@ -86,6 +87,7 @@ type App struct {
 	// Status bar elements
 	statusBarLabel     *canvas.Text
 	recordingTimeLabel *canvas.Text
+	jobQueueLabel      *canvas.Text
 	statusBarContainer *fyne.Container
 
 	// Layout drawer elements
@@ -259,10 +261,17 @@ func (a *App) buildStatusBar() {
 	a.recordingTimeLabel.TextStyle = fyne.TextStyle{Bold: true}
 	a.recordingTimeLabel.Alignment = fyne.TextAlignTrailing
 
+	// Center: job queue status
+	a.jobQueueLabel = canvas.NewText("", color.NRGBA{R: 243, G: 156, B: 18, A: 255}) // Amber
+	a.jobQueueLabel.TextSize = 12
+	a.jobQueueLabel.TextStyle = fyne.TextStyle{Bold: true}
+	a.jobQueueLabel.Alignment = fyne.TextAlignCenter
+
 	statusContent := container.NewBorder(
 		nil, nil,
 		container.NewPadded(a.statusBarLabel),
 		container.NewPadded(a.recordingTimeLabel),
+		container.NewPadded(a.jobQueueLabel),
 	)
 
 	a.statusBarContainer = container.NewStack(statusBarBg, statusContent)
@@ -1176,7 +1185,7 @@ func (a *App) startRecording() {
 		a.logger.Printf("[recording] check disk space failed: %v", err)
 		dialog.ShowError(fmt.Errorf(i18n.T("disk_check_error"), err), a.window)
 		// Proceed anyway so a system error doesn't completely block recording
-		a.proceedWithRecording(recordings, cols, rows)
+		a.showPatientNameDialogForRecording(recordings, cols, rows)
 		return
 	}
 
@@ -1190,18 +1199,18 @@ func (a *App) startRecording() {
 		return
 	} else if availableMins < 15.0 {
 		a.showDiskSpaceWarning(availableMins, func() {
-			a.proceedWithRecording(recordings, cols, rows)
+			a.showPatientNameDialogForRecording(recordings, cols, rows)
 		}, func() {
 			a.changeRecordingsDirAndRetry()
 		})
 		return
 	}
 
-	a.proceedWithRecording(recordings, cols, rows)
+	a.showPatientNameDialogForRecording(recordings, cols, rows)
 }
 
-func (a *App) proceedWithRecording(cameras []stream.CameraRecording, cols, rows int) {
-	session, err := stream.NewRecordingSession(a.cfg.RecordingsDir, cameras, cols, rows)
+func (a *App) proceedWithRecording(cameras []stream.CameraRecording, cols, rows int, patientDir string) {
+	session, err := stream.NewRecordingSession(patientDir, cameras, cols, rows)
 	if err != nil {
 		dialog.ShowError(err, a.window)
 		return
@@ -1531,38 +1540,11 @@ func (a *App) stopRecording() {
 
 	go func() {
 		a.multiManager.StopRecording(session)
+		
 		fyne.Do(func() {
 			progress.Hide()
-			a.showPatientNameDialog(session)
-		})
-	}()
-}
-
-func (a *App) showPatientNameDialog(session *stream.RecordingSession) {
-	nameEntry := widget.NewEntry()
-	nameEntry.SetPlaceHolder(i18n.T("record_patient_placeholder"))
-
-	dlg := dialog.NewForm(
-		i18n.T("record_patient_title"),
-		i18n.T("record_patient_btn"),
-		i18n.T("btn_cancel"),
-		[]*widget.FormItem{
-			widget.NewFormItem(i18n.T("record_patient_label"), nameEntry),
-		},
-		func(ok bool) {
-			if !ok {
-				_ = os.RemoveAll(session.TempDir)
-				return
-			}
-			patientName := strings.TrimSpace(nameEntry.Text)
-			outDir := stream.GetOutputDir(a.cfg.RecordingsDir, patientName)
-
-			if err := os.MkdirAll(outDir, 0o755); err != nil {
-				dialog.ShowError(fmt.Errorf("failed to create output directory: %w", err), a.window)
-				return
-			}
-
-			// Show progress dialog while processing
+			
+			// Start fast single-pass grid processing
 			progressBar := widget.NewProgressBar()
 			progressLabel := widget.NewLabel(i18n.T("record_processing"))
 			progressContent := container.NewVBox(progressLabel, progressBar)
@@ -1576,12 +1558,17 @@ func (a *App) showPatientNameDialog(session *stream.RecordingSession) {
 			go func() {
 				ctx := context.Background()
 				progressCh := make(chan float64, 10)
+				patientDir := session.Snapshot().TempDir
+				// TempDir is set to patientDir/raw in manager.go/recording_session.go.
+				// Let me get the actual patientDir.
+				_ = patientDir
+				actualPatientDir := filepath.Dir(session.TempDir)
 
 				var result stream.ProcessResult
 				done := make(chan struct{})
 
 				go func() {
-					result = a.postProc.Process(ctx, session, outDir, progressCh)
+					result = a.postProc.ProcessGeneralOnly(ctx, session, actualPatientDir, progressCh)
 					close(done)
 				}()
 
@@ -1596,31 +1583,37 @@ func (a *App) showPatientNameDialog(session *stream.RecordingSession) {
 				}()
 
 				<-done
-
-				// Clean up compressed source and aligned temporary files only
-				// after all final MP4 files have been atomically completed.
-				if result.Err == nil {
-					_ = os.RemoveAll(session.TempDir)
-				} else {
-					for _, f := range result.Files {
-						_ = os.Remove(f)
+				
+				// Enqueue remaining files to JobQueue
+				if result.Err == nil && a.jobQueue != nil {
+					_ = a.jobQueue.Enqueue(session, actualPatientDir)
+				}
+				
+				// Update patient info with the general video
+				if result.Err == nil && len(result.Files) > 0 {
+					info, err := stream.LoadPatientInfo(actualPatientDir)
+					if err == nil {
+						info.Videos = append(info.Videos, stream.VideoFile{
+							FileName: filepath.Base(result.Files[0]),
+							Type:     "general",
+						})
+						_ = stream.SavePatientInfo(actualPatientDir, info)
 					}
-					_ = os.Remove(outDir)
 				}
 
 				fyne.Do(func() {
 					progressDlg.Hide()
 
 					if result.Err != nil {
-						detailedErr := fmt.Errorf("%v\n\nCompressed recovery files were preserved at:\n%s", result.Err, session.TempDir)
+						detailedErr := fmt.Errorf("Genel video oluşturulamadı: %v", result.Err)
 						dialog.ShowError(detailedErr, a.window)
 						return
 					}
 
 					// Show success dialog with Open Folder option
-					msg := i18n.T("record_done_msg", result.OutputDir)
+					msg := "Kayıt tamamlandı!\nGenel video hazırlandı. Bireysel kameralar arka planda işleniyor."
 					openBtn := widget.NewButtonWithIcon(i18n.T("record_done_open"), theme.FolderOpenIcon(), func() {
-						openPath(result.OutputDir)
+						openPath(actualPatientDir)
 					})
 					openBtn.Importance = widget.HighImportance
 					closeBtn := widget.NewButton(i18n.T("record_done_close"), nil)
@@ -1641,10 +1634,65 @@ func (a *App) showPatientNameDialog(session *stream.RecordingSession) {
 					successDlg.Show()
 				})
 			}()
+		})
+	}()
+}
+
+func (a *App) showPatientNameDialogForRecording(cameras []stream.CameraRecording, cols, rows int) {
+	nameEntry := widget.NewEntry()
+	nameEntry.SetPlaceHolder(i18n.T("record_patient_placeholder"))
+	
+	tcEntry := widget.NewEntry()
+	tcEntry.SetPlaceHolder("TC Kimlik No (Opsiyonel)")
+	
+	historyEntry := widget.NewMultiLineEntry()
+	historyEntry.SetPlaceHolder("Hasta Hikayesi (Opsiyonel)")
+	historyEntry.SetMinRowsVisible(3)
+
+	dlg := dialog.NewForm(
+		i18n.T("record_patient_title"),
+		i18n.T("record_patient_btn"),
+		i18n.T("btn_cancel"),
+		[]*widget.FormItem{
+			widget.NewFormItem(i18n.T("record_patient_label"), nameEntry),
+			widget.NewFormItem("TC Kimlik", tcEntry),
+			widget.NewFormItem("Hikaye", historyEntry),
+		},
+		func(ok bool) {
+			if !ok {
+				return
+			}
+			patientName := strings.TrimSpace(nameEntry.Text)
+			if patientName == "" {
+				patientName = "Kayit"
+			}
+			
+			tc := strings.TrimSpace(tcEntry.Text)
+			history := strings.TrimSpace(historyEntry.Text)
+			
+			outDir := stream.GetOutputDir(a.cfg.RecordingsDir, patientName)
+
+			if err := os.MkdirAll(outDir, 0o755); err != nil {
+				dialog.ShowError(fmt.Errorf("failed to create output directory: %w", err), a.window)
+				return
+			}
+			
+			// Create PatientInfo
+			info := stream.PatientInfo{
+				Name:           patientName,
+				TC:             tc,
+				PatientHistory: history,
+				RecordDate:     time.Now(),
+			}
+			if err := stream.SavePatientInfo(outDir, info); err != nil {
+				a.logger.Printf("Failed to save patient info: %v", err)
+			}
+			
+			a.proceedWithRecording(cameras, cols, rows, outDir)
 		},
 		a.window,
 	)
-	dlg.Resize(fyne.NewSize(400, 160))
+	dlg.Resize(fyne.NewSize(400, 300))
 	dlg.Show()
 }
 
@@ -2369,6 +2417,10 @@ func (a *App) Run() error {
 
 		multiMgr := stream.NewMultiManager(&cfg, cfgPath, logger)
 		postProc := stream.NewPostProcessor(resolvedFFmpeg, logger, cfg.DisableHardwareAccel)
+		jq, err := stream.NewJobQueue(cfg.RecordingsDir, postProc, logger)
+		if err != nil {
+			logger.Printf("Failed to init job queue: %v", err)
+		}
 
 		// Initialize i18n
 		i18n.Init(cfg.Language)
@@ -2379,9 +2431,49 @@ func (a *App) Run() error {
 		a.logger = logger
 		a.multiManager = multiMgr
 		a.postProc = postProc
+		a.jobQueue = jq
 		a.cameraPanels = make(map[string]*ui.CameraPanel)
 		a.cameraOrder = getCameraOrder(cfg.Cameras)
 		a.mu.Unlock()
+
+		if jq != nil {
+			jq.SetCallbacks(
+				func(id string, progress float64, status string) {
+					fyne.Do(func() {
+						if a.jobQueueLabel != nil {
+							if status == stream.JobStatusProcessing {
+								active, total := jq.GetProgressInfo()
+								if total > 0 {
+									a.jobQueueLabel.Text = fmt.Sprintf("Arka planda işleniyor: %d / %d (%%%d)", active, total, int(progress))
+									a.jobQueueLabel.Refresh()
+								}
+							}
+						}
+					})
+				},
+				func(id string, status string) {
+					fyne.Do(func() {
+						if status == stream.JobStatusCompleted {
+							a.fyneApp.SendNotification(fyne.NewNotification(i18n.T("title_app"), i18n.T("record_processing")+" tamamlandı!"))
+						} else if status == stream.JobStatusFailed {
+							a.fyneApp.SendNotification(fyne.NewNotification(i18n.T("title_app"), i18n.T("record_processing")+" başarısız!"))
+						}
+						
+						if a.jobQueueLabel != nil {
+							active, total := jq.GetProgressInfo()
+							if total > 0 {
+								a.jobQueueLabel.Text = fmt.Sprintf("Arka planda işleniyor: %d / %d", active, total)
+							} else {
+								a.jobQueueLabel.Text = ""
+							}
+							a.jobQueueLabel.Refresh()
+						}
+					})
+				},
+			)
+			jq.Start(context.Background())
+			_ = jq.Resume()
+		}
 
 		// Perform UI setup on the main thread and show main window
 		fyne.Do(func() {
@@ -2439,6 +2531,36 @@ func (a *App) Quit() {
 	a.mu.Lock()
 	a.isRecording = false
 	a.mu.Unlock()
+
+	if a.jobQueue != nil {
+		a.jobQueue.Stop()
+		
+		// Run cleanup for completed jobs
+		if jobs, err := a.jobQueue.GetCompletedJobs(); err == nil {
+			for _, job := range jobs {
+				// Verify if outputs exist for the completed jobs
+				patientInfo, err := stream.LoadPatientInfo(job.PatientDir)
+				if err == nil && len(patientInfo.Videos) > 0 {
+					allValid := true
+					for _, vid := range patientInfo.Videos {
+						vidPath := filepath.Join(job.PatientDir, vid.FileName)
+						if err := a.postProc.VerifyOutput(vidPath); err != nil {
+							allValid = false
+							break
+						}
+					}
+					// If all processed videos are valid, delete the raw directory safely
+					if allValid {
+						rawDir := filepath.Join(job.PatientDir, "raw")
+						if _, err := os.Stat(rawDir); err == nil {
+							_ = os.RemoveAll(rawDir)
+						}
+						a.jobQueue.DeleteJob(job.ID)
+					}
+				}
+			}
+		}
+	}
 
 	if a.multiManager != nil {
 		a.multiManager.Close()

@@ -45,9 +45,156 @@ type ProcessResult struct {
 	Err       error
 }
 
+// ProcessGeneralOnly creates the general grid video directly from raw recording
+// segments in a single FFmpeg pass — no intermediate aligned files. This is the
+// fast path called immediately after recording stops so the doctor can view the
+// grid video right away.
+func (p *PostProcessor) ProcessGeneralOnly(
+	ctx context.Context,
+	session *RecordingSession,
+	outDir string,
+	progress chan<- float64,
+) ProcessResult {
+	snapshot := session.Snapshot()
+	cameras := session.CameraList()
+	if snapshot.EndedAt.IsZero() {
+		snapshot.EndedAt = time.Now()
+	}
+	if len(cameras) == 0 {
+		return ProcessResult{OutputDir: outDir, Err: fmt.Errorf("recording session contains no cameras")}
+	}
+
+	timestamp := time.Now().Format("20060102_150405")
+
+	tracker := &progressTracker{
+		totalJobs:   1,
+		activeJobs:  make(map[string]float64),
+		progressOut: progress,
+	}
+
+	generalFile := filepath.Join(outDir, fmt.Sprintf("Genel_%s.mp4", timestamp))
+	if err := p.renderGeneralFromSegments(ctx, snapshot, cameras, generalFile, func(f float64) { tracker.updateJob(generalFile, f) }); err != nil {
+		return ProcessResult{OutputDir: outDir, Err: fmt.Errorf("create general video: %w", err)}
+	}
+	tracker.finishJob(generalFile)
+
+	return ProcessResult{OutputDir: outDir, Files: []string{generalFile}}
+}
+
+// ProcessIndividualCameras creates one native-resolution MP4 per camera.
+// Called by the background job queue after the general video is already done.
+func (p *PostProcessor) ProcessIndividualCameras(
+	ctx context.Context,
+	snapshot RecordingSessionSnapshot,
+	cameras []CameraRecording,
+	outDir string,
+	progress chan<- float64,
+) ProcessResult {
+	if snapshot.EndedAt.IsZero() {
+		snapshot.EndedAt = time.Now()
+	}
+	if len(cameras) == 0 {
+		return ProcessResult{OutputDir: outDir, Err: fmt.Errorf("recording session contains no cameras")}
+	}
+
+	timestamp := time.Now().Format("20060102_150405")
+	var files []string
+	var mu sync.Mutex
+	var firstErr error
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	tracker := &progressTracker{
+		totalJobs:   len(cameras),
+		activeJobs:  make(map[string]float64),
+		progressOut: progress,
+	}
+
+	sem := make(chan struct{}, 2)
+	var wg sync.WaitGroup
+	for i := range cameras {
+		camera := cameras[i]
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			safeName := sanitizeFilename(camera.Name)
+			if safeName == "" {
+				safeName = sanitizeFilename(camera.ID)
+			}
+			outFile := filepath.Join(outDir, fmt.Sprintf("%s_%s.mp4", safeName, timestamp))
+
+			if err := p.renderCamera(ctx, snapshot, camera, outFile, func(f float64) { tracker.updateJob(outFile, f) }); err != nil {
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = fmt.Errorf("process camera %s: %w", camera.Name, err)
+					cancel()
+				}
+				mu.Unlock()
+			} else {
+				tracker.finishJob(outFile)
+				mu.Lock()
+				files = append(files, outFile)
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+
+	if ctx.Err() != nil && firstErr == nil {
+		return ProcessResult{OutputDir: outDir, Files: files, Err: ctx.Err()}
+	}
+	if firstErr != nil {
+		return ProcessResult{OutputDir: outDir, Files: files, Err: firstErr}
+	}
+
+	return ProcessResult{OutputDir: outDir, Files: files}
+}
+
+// VerifyOutput checks that an output video file is valid using ffprobe.
+func (p *PostProcessor) VerifyOutput(outFile string) error {
+	info, err := os.Stat(outFile)
+	if err != nil {
+		return fmt.Errorf("output file missing: %w", err)
+	}
+	if info.Size() == 0 {
+		return fmt.Errorf("output file is empty: %s", outFile)
+	}
+
+	// Probe video stream with ffprobe (part of ffmpeg distribution)
+	ffprobePath := strings.TrimSuffix(p.ffmpegPath, "ffmpeg") + "ffprobe"
+	if _, err := os.Stat(ffprobePath); err != nil {
+		// ffprobe not available — fall back to size-only check
+		if p.logger != nil {
+			p.logger.Printf("[post_processor] ffprobe not found, skipping stream verification for %s", outFile)
+		}
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, ffprobePath,
+		"-v", "error",
+		"-select_streams", "v:0",
+		"-show_entries", "stream=duration",
+		"-of", "csv=p=0",
+		outFile,
+	)
+	setHideWindow(cmd)
+	_, err = cmd.Output()
+	if err != nil {
+		return fmt.Errorf("ffprobe failed for %s: %w", outFile, err)
+	}
+	return nil
+}
+
 // Process creates one native-resolution MP4 per camera and then the general
-// grid. Temporary session data is deliberately not removed here; the caller
-// removes it only after this method reports complete success.
+// grid. Kept for backward compatibility; new code should use ProcessGeneralOnly
+// followed by ProcessIndividualCameras via the job queue.
 func (p *PostProcessor) Process(
 	ctx context.Context,
 	session *RecordingSession,
@@ -484,3 +631,134 @@ func sanitizeFilename(name string) string {
 	}
 	return result
 }
+
+func (p *PostProcessor) renderGeneralFromSegments(
+	ctx context.Context,
+	session RecordingSessionSnapshot,
+	cameras []CameraRecording,
+	outFile string,
+	onProgress func(float64),
+) error {
+	duration := session.EndedAt.Sub(session.StartedAt)
+	maxW, maxH, maxFPS := 0, 0, 0
+	for _, camera := range cameras {
+		w, h, fps := normalizedVideoParams(camera.Width, camera.Height, camera.FPS)
+		if w > maxW {
+			maxW = w
+		}
+		if h > maxH {
+			maxH = h
+		}
+		if fps > maxFPS {
+			maxFPS = fps
+		}
+	}
+	if maxFPS > 60 {
+		maxFPS = 60
+	}
+
+	args := []string{"-hide_banner", "-loglevel", "warning", "-stats"}
+	var filters []string
+	var labels []string
+	var layout []string
+	inputIdx := 0
+
+	addBlack := func(d time.Duration) string {
+		if d <= 10*time.Millisecond {
+			return ""
+		}
+		args = append(args,
+			"-f", "lavfi",
+			"-t", ffDuration(d),
+			"-i", fmt.Sprintf("color=c=black:s=%dx%d:r=%d", maxW, maxH, maxFPS),
+		)
+		label := fmt.Sprintf("v%d", inputIdx)
+		filters = append(filters, fmt.Sprintf("[%d:v]setsar=1,setpts=PTS-STARTPTS[%s]", inputIdx, label))
+		inputIdx++
+		return fmt.Sprintf("[%s]", label)
+	}
+
+	for camIdx, camera := range cameras {
+		cursor := session.StartedAt
+		var camLabels []string
+		
+		for _, segment := range camera.Segments {
+			info, err := os.Stat(segment.Path)
+			if err != nil || info.Size() == 0 {
+				continue
+			}
+			start := segment.StartedAt
+			if start.Before(session.StartedAt) {
+				start = session.StartedAt
+			}
+			end := segment.EndedAt
+			if end.IsZero() || end.After(session.EndedAt) {
+				end = session.EndedAt
+			}
+			if end.Before(start) {
+				continue
+			}
+			if start.After(cursor) {
+				if lbl := addBlack(start.Sub(cursor)); lbl != "" {
+					camLabels = append(camLabels, lbl)
+				}
+			}
+			segmentDuration := end.Sub(start)
+			if segmentDuration <= 10*time.Millisecond {
+				continue
+			}
+			args = append(args, "-err_detect", "ignore_err", "-t", ffDuration(segmentDuration), "-i", segment.Path)
+			label := fmt.Sprintf("v%d", inputIdx)
+			filters = append(filters, fmt.Sprintf(
+				"[%d:v]scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2:black,fps=%d,setsar=1,setpts=PTS-STARTPTS[%s]",
+				inputIdx, maxW, maxH, maxW, maxH, maxFPS, label,
+			))
+			camLabels = append(camLabels, fmt.Sprintf("[%s]", label))
+			inputIdx++
+			cursor = end
+		}
+		
+		if cursor.Before(session.EndedAt) {
+			if lbl := addBlack(session.EndedAt.Sub(cursor)); lbl != "" {
+				camLabels = append(camLabels, lbl)
+			}
+		}
+		
+		camConcatLabel := fmt.Sprintf("g%d", camIdx)
+		if len(camLabels) == 0 {
+			if lbl := addBlack(duration); lbl != "" {
+				filters = append(filters, fmt.Sprintf("%scopy[%s]", lbl, camConcatLabel))
+			} else {
+				// Fallback if somehow duration is 0
+				filters = append(filters, fmt.Sprintf("color=c=black:s=%dx%d:r=%d[%s]", maxW, maxH, maxFPS, camConcatLabel))
+			}
+		} else if len(camLabels) == 1 {
+			filters = append(filters, fmt.Sprintf("%scopy[%s]", camLabels[0], camConcatLabel))
+		} else {
+			filters = append(filters, fmt.Sprintf("%sconcat=n=%d:v=1:a=0[%s]", strings.Join(camLabels, ""), len(camLabels), camConcatLabel))
+		}
+		labels = append(labels, "["+camConcatLabel+"]")
+		col := camIdx % session.Cols
+		row := camIdx / session.Cols
+		layout = append(layout, fmt.Sprintf("%d_%d", col*maxW, row*maxH))
+	}
+
+	if len(labels) == 1 {
+		filters = append(filters, fmt.Sprintf("[g0]%s[outv]", timestampFilter(session.StartedAt, 24)))
+	} else {
+		filters = append(filters, fmt.Sprintf(
+			"%sxstack=inputs=%d:layout=%s:fill=black[stack]",
+			strings.Join(labels, ""), len(labels), strings.Join(layout, "|"),
+		))
+		filters = append(filters, fmt.Sprintf("[stack]%s[outv]", timestampFilter(session.StartedAt, 24)))
+	}
+	
+	args = append(args, "-filter_complex", strings.Join(filters, ";"), "-map", "[outv]", "-an")
+	
+	if p.logger != nil {
+		p.logger.Printf("renderGeneralFromSegments FFMPEG ARGS: %v", args)
+	}
+	
+	return p.runEncoded(ctx, args, outFile, duration, onProgress)
+}
+

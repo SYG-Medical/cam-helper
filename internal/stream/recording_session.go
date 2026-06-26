@@ -1,6 +1,7 @@
 package stream
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,21 +11,21 @@ import (
 
 // RecordingSegment is one uninterrupted camera recording file.
 type RecordingSegment struct {
-	Path      string
-	StartedAt time.Time
-	EndedAt   time.Time
+	Path      string    `json:"path"`
+	StartedAt time.Time `json:"started_at"`
+	EndedAt   time.Time `json:"ended_at"`
 }
 
 // CameraRecording describes the native recording timeline of one camera.
 type CameraRecording struct {
-	ID         string
-	Name       string
-	Width      int
-	Height     int
-	FPS        int
-	Order      int
-	WasRunning bool
-	Segments   []RecordingSegment
+	ID         string             `json:"id"`
+	Name       string             `json:"name"`
+	Width      int                `json:"width"`
+	Height     int                `json:"height"`
+	FPS        int                `json:"fps"`
+	Order      int                `json:"order"`
+	WasRunning bool               `json:"was_running"`
+	Segments   []RecordingSegment `json:"segments"`
 }
 
 // RecordingSession contains all temporary camera recordings for one user session.
@@ -43,19 +44,26 @@ type RecordingSession struct {
 
 // RecordingSessionSnapshot is an immutable copy used by post-processing.
 type RecordingSessionSnapshot struct {
-	ID        string
-	TempDir   string
-	StartedAt time.Time
-	EndedAt   time.Time
-	Cols      int
-	Rows      int
-	Cameras   map[string]*CameraRecording
+	ID        string                       `json:"id"`
+	TempDir   string                       `json:"temp_dir"`
+	StartedAt time.Time                    `json:"started_at"`
+	EndedAt   time.Time                    `json:"ended_at"`
+	Cols      int                          `json:"cols"`
+	Rows      int                          `json:"rows"`
+	Cameras   map[string]*CameraRecording  `json:"cameras"`
 }
 
-func NewRecordingSession(recordingsDir string, cameras []CameraRecording, cols, rows int) (*RecordingSession, error) {
+// NewRecordingSession creates a session that stores raw segments under
+// patientDir/raw/. When patientDir is empty the legacy Temp path is used.
+func NewRecordingSession(patientDir string, cameras []CameraRecording, cols, rows int) (*RecordingSession, error) {
 	now := time.Now()
 	id := now.Format("20060102_150405.000")
-	tempDir := filepath.Join(recordingsDir, "Temp", "session_"+id)
+	var tempDir string
+	if patientDir != "" {
+		tempDir = filepath.Join(patientDir, "raw")
+	} else {
+		tempDir = filepath.Join(os.TempDir(), "nystavision", "session_"+id)
+	}
 	if err := os.MkdirAll(tempDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create recording session directory: %w", err)
 	}
@@ -172,3 +180,16 @@ func (s *RecordingSession) DirectorySize() uint64 {
 	})
 	return total
 }
+
+// MarshalSnapshot serializes a snapshot to JSON for persistent job storage.
+func MarshalSnapshot(snap RecordingSessionSnapshot) ([]byte, error) {
+	return json.Marshal(snap)
+}
+
+// UnmarshalSnapshot deserializes a snapshot from JSON.
+func UnmarshalSnapshot(data []byte) (RecordingSessionSnapshot, error) {
+	var snap RecordingSessionSnapshot
+	err := json.Unmarshal(data, &snap)
+	return snap, err
+}
+

@@ -378,22 +378,19 @@ func (m *Manager) buildFFmpegCommand(ctx context.Context) (*exec.Cmd, error) {
 	cam := m.cam
 	session := m.recordSession
 	profile := m.recordProfile
-	forceEncode := m.forceRecordEncode
 	m.mu.Unlock()
 
 	var recordPath string
-	recordCopy := false
 	if session != nil {
 		index, path, err := session.BeginSegment(cam.ID, time.Now())
 		if err != nil {
 			return nil, err
 		}
 		recordPath = path
-		recordCopy = cam.Type == "rtsp" && !forceEncode
 		m.mu.Lock()
 		m.currentSegment = index
 		m.currentSegmentPath = path
-		m.currentSegmentCopy = recordCopy
+		m.currentSegmentCopy = false // MJPEG always re-encodes
 		m.mu.Unlock()
 	}
 
@@ -403,7 +400,7 @@ func (m *Manager) buildFFmpegCommand(ctx context.Context) (*exec.Cmd, error) {
 	case "webcam":
 		args = m.buildWebcamArgs(cam, recordPath, profile)
 	default: // "rtsp"
-		args = m.buildRTSPArgs(cam, recordPath, profile, recordCopy)
+		args = m.buildRTSPArgs(cam, recordPath, profile, false)
 	}
 
 	cmd := exec.Command(path, args...)
@@ -448,9 +445,6 @@ func (m *Manager) buildRTSPArgs(cam config.CameraSource, recordPath string, prof
 		"-hide_banner",
 		"-loglevel", "warning",
 	}
-	if recordPath != "" && !streamCopy {
-		args = append(args, profile.InitArgs...)
-	}
 	args = append(args,
 		"-rtsp_transport", "tcp",
 		"-probesize", "100K",
@@ -462,12 +456,11 @@ func (m *Manager) buildRTSPArgs(cam config.CameraSource, recordPath string, prof
 	)
 
 	if recordPath != "" {
+		// Use MJPEG for recording: each frame is encoded independently
+		// (no inter-frame compression) to preserve per-frame integrity
+		// for medical nystagmus analysis.
 		args = append(args, "-map", "0:v:0", "-an")
-		if streamCopy {
-			args = append(args, "-c:v", "copy")
-		} else {
-			args = appendEncoderArgs(args, profile, "")
-		}
+		args = append(args, "-c:v", "mjpeg", "-q:v", "2")
 		args = append(args, "-f", "matroska", "-y", recordPath)
 	}
 
@@ -541,8 +534,11 @@ func (m *Manager) buildWebcamArgs(cam config.CameraSource, recordPath string, pr
 	)
 
 	if recordPath != "" {
+		// Use MJPEG for recording: each frame is encoded independently
+		// (no inter-frame compression) to preserve per-frame integrity
+		// for medical nystagmus analysis.
 		args = append(args, "-map", "0:v:0", "-an")
-		args = appendEncoderArgs(args, profile, "")
+		args = append(args, "-c:v", "mjpeg", "-q:v", "2")
 		args = append(args, "-f", "matroska", "-y", recordPath)
 	}
 
