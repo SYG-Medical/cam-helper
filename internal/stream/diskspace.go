@@ -50,6 +50,38 @@ func EstimateCameraRecordingAvailableMinutes(freeDiskBytes uint64, cameras []Cam
 	return float64(freeDiskBytes) / float64(bytesPerMinute)
 }
 
+// EstimateCompositeBytesPerMinute estimates disk usage for the composite
+// recording mode. One single H.264 video is written with a fixed-size grid at
+// CompositeTargetFPS. 640×360 per cell, CRF 23 ≈ ~800 KB/s per camera cell.
+func EstimateCompositeBytesPerMinute(numCameras, cols, rows int) uint64 {
+	if numCameras <= 0 {
+		return 0
+	}
+	if cols <= 0 {
+		cols = 1
+	}
+	if rows <= 0 {
+		rows = 1
+	}
+	totalW := cols * CompositeCellW
+	totalH := rows * CompositeCellH
+	// CRF 23 at CompositeTargetFPS: roughly 0.07 bytes/pixel/frame (same coefficient)
+	bytesPerSecond := float64(totalW*totalH*CompositeTargetFPS) * 0.07
+	bytesPerMinute := bytesPerSecond * 60.0
+	// Add 20% margin for decompose job output files that briefly coexist.
+	return uint64(math.Ceil(bytesPerMinute * 1.20))
+}
+
+// EstimateCompositeAvailableMinutes returns how many minutes of composite
+// recording can fit in the available disk space.
+func EstimateCompositeAvailableMinutes(freeDiskBytes uint64, numCameras, cols, rows int) float64 {
+	bpm := EstimateCompositeBytesPerMinute(numCameras, cols, rows)
+	if bpm == 0 {
+		return 0
+	}
+	return float64(freeDiskBytes) / float64(bpm)
+}
+
 // EstimateRecordingBytesPerMinute calculates the estimated peak bytes used per minute
 // of recording. This accounts for the temp file and post-processed outputs (approx. 2x temp file size)
 // plus a 15% safety margin.
@@ -75,3 +107,4 @@ func EstimateAvailableMinutes(freeDiskBytes uint64, gridW, gridH, fps, numCamera
 	}
 	return float64(freeDiskBytes) / float64(bytesPerMinute)
 }
+

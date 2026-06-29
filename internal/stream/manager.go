@@ -415,6 +415,14 @@ func (m *Manager) PreviewDimensions() (int, int) {
 	enableHTTP := m.enableHTTPServer
 	m.mu.Unlock()
 
+	if activeW == 0 {
+		// When falling back to auto-negotiation, activeW is 0. 
+		// We MUST return a positive width and height to calculate the rawvideo frame size properly,
+		// and to provide a valid scale filter string (e.g. scale=640:360).
+		// We assume a standard 16:9 aspect ratio as a safe fallback.
+		return 640, 360
+	}
+
 	// If it is the RTSP server camera, we keep the original resolution for the stdout preview pipeline
 	if enableHTTP {
 		return activeW, activeH
@@ -423,7 +431,12 @@ func (m *Manager) PreviewDimensions() (int, int) {
 	// Otherwise, scale preview down to max 640 width to save CPU/memory copy overhead
 	if activeW > 640 {
 		ratio := float64(activeH) / float64(activeW)
-		return 640, int(640 * ratio)
+		// Ensure height is even
+		newH := int(640 * ratio)
+		if newH%2 != 0 {
+			newH++
+		}
+		return 640, newH
 	}
 	return activeW, activeH
 }
@@ -501,10 +514,12 @@ func (m *Manager) buildWebcamArgs(cam config.CameraSource, recordPath string, pr
 		if activeFormat != "" {
 			args = append(args, "-input_format", activeFormat)
 		}
-		args = append(args,
-			"-framerate", fmt.Sprintf("%d", activeFPS),
-			"-video_size", fmt.Sprintf("%dx%d", activeW, activeH),
-		)
+		if activeFPS > 0 {
+			args = append(args, "-framerate", fmt.Sprintf("%d", activeFPS))
+		}
+		if activeW > 0 && activeH > 0 {
+			args = append(args, "-video_size", fmt.Sprintf("%dx%d", activeW, activeH))
+		}
 	} else if runtime.GOOS == "windows" {
 		args = append(args,
 			"-f", "dshow",
@@ -517,16 +532,20 @@ func (m *Manager) buildWebcamArgs(cam config.CameraSource, recordPath string, pr
 				args = append(args, "-pixel_format", activeFormat)
 			}
 		}
-		args = append(args,
-			"-framerate", fmt.Sprintf("%d", activeFPS),
-			"-video_size", fmt.Sprintf("%dx%d", activeW, activeH),
-		)
+		if activeFPS > 0 {
+			args = append(args, "-framerate", fmt.Sprintf("%d", activeFPS))
+		}
+		if activeW > 0 && activeH > 0 {
+			args = append(args, "-video_size", fmt.Sprintf("%dx%d", activeW, activeH))
+		}
 	} else if runtime.GOOS == "darwin" {
-		args = append(args,
-			"-f", "avfoundation",
-			"-framerate", fmt.Sprintf("%d", activeFPS),
-			"-video_size", fmt.Sprintf("%dx%d", activeW, activeH),
-		)
+		args = append(args, "-f", "avfoundation")
+		if activeFPS > 0 {
+			args = append(args, "-framerate", fmt.Sprintf("%d", activeFPS))
+		}
+		if activeW > 0 && activeH > 0 {
+			args = append(args, "-video_size", fmt.Sprintf("%dx%d", activeW, activeH))
+		}
 	}
 
 	args = append(args,
@@ -1054,27 +1073,18 @@ func (m *Manager) applyBestCapability(ctx context.Context) {
 		return
 	}
 
-	m.mu.Lock()
-	pf := m.cam.PixelFormat
-	m.mu.Unlock()
-
-	if targetW > 0 && targetH > 0 && targetFPS > 0 && pf != "" {
-		m.logger.Printf("[%s] Using explicit config format: %dx%d @ %d FPS (fmt: %s)", m.cam.Name, targetW, targetH, targetFPS, pf)
-		m.mu.Lock()
-		m.activeW = targetW
-		m.activeH = targetH
-		m.activeFPS = targetFPS
-		m.activeFormat = pf
-		m.mu.Unlock()
-		return
-	}
-
-	// If Auto mode (0x0), aim for 1280x720 30fps as our baseline search target
-	if targetW == 0 || targetH == 0 || targetFPS == 0 {
+	// Determine the target we want to find or round to
+	if m.globalCfg.CompositeRecording {
+		targetW = CompositeCellW
+		targetH = CompositeCellH
+		targetFPS = CompositeTargetFPS
+	} else if targetW == 0 || targetH == 0 || targetFPS == 0 {
+		// Auto mode baseline target
 		targetW = 1280
 		targetH = 720
 		targetFPS = 30
 	}
+	// If CompositeRecording is OFF and targetW > 0, we already have targetW/H/FPS from config.
 
 	caps, err := QueryCapabilities(ctx, ffmpegPath, device, m.logger)
 	if err != nil {
@@ -1088,11 +1098,11 @@ func (m *Manager) applyBestCapability(ctx context.Context) {
 			m.recordError(ErrDeviceIOError)
 			return
 		}
-		m.logger.Printf("[%s] failed to query supported capabilities: %v, using default %dx%d", m.cam.Name, err, targetW, targetH)
+		m.logger.Printf("[%s] failed to query supported capabilities: %v, falling back to complete auto-negotiation", m.cam.Name, err)
 		m.mu.Lock()
-		m.activeW = targetW
-		m.activeH = targetH
-		m.activeFPS = targetFPS
+		m.activeW = 0
+		m.activeH = 0
+		m.activeFPS = 0
 		m.activeFormat = "" // Completely auto, let ffmpeg negotiate
 		m.mu.Unlock()
 		return

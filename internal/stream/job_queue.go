@@ -21,13 +21,16 @@ const (
 
 // ProcessingJob represents a background video processing task.
 type ProcessingJob struct {
-	ID          string          `json:"id"`
-	PatientDir  string          `json:"patient_dir"`
-	Status      string          `json:"status"`
-	CreatedAt   time.Time       `json:"created_at"`
-	CompletedAt time.Time       `json:"completed_at,omitempty"`
-	Error       string          `json:"error,omitempty"`
-	SessionData json.RawMessage `json:"session_data"`
+	ID            string          `json:"id"`
+	PatientDir    string          `json:"patient_dir"`
+	Status        string          `json:"status"`
+	CreatedAt     time.Time       `json:"created_at"`
+	CompletedAt   time.Time       `json:"completed_at,omitempty"`
+	Error         string          `json:"error,omitempty"`
+	SessionData   json.RawMessage `json:"session_data"`
+	// Composite mode fields
+	IsComposite   bool   `json:"is_composite,omitempty"`
+	CompositeFile string `json:"composite_file,omitempty"`
 }
 
 // JobQueue manages background video post-processing tasks.
@@ -40,8 +43,8 @@ type JobQueue struct {
 	wg         sync.WaitGroup
 	queue      chan ProcessingJob
 	
-	onProgress func(jobID string, progress float64, status string)
-	onComplete func(jobID string, status string)
+	onProgress func(jobID string, progress float64, status string, isComposite bool)
+	onComplete func(jobID string, status string, isComposite bool)
 
 	activeJobs int
 	totalJobs  int
@@ -70,7 +73,7 @@ func (jq *JobQueue) GetProgressInfo() (active int, total int) {
 }
 
 // SetCallbacks sets UI callbacks.
-func (jq *JobQueue) SetCallbacks(onProgress func(id string, p float64, s string), onComplete func(id string, s string)) {
+func (jq *JobQueue) SetCallbacks(onProgress func(id string, p float64, s string, isComposite bool), onComplete func(id string, s string, isComposite bool)) {
 	jq.mu.Lock()
 	defer jq.mu.Unlock()
 	jq.onProgress = onProgress
@@ -103,7 +106,7 @@ func (jq *JobQueue) Stop() {
 	jq.wg.Wait()
 }
 
-// Enqueue adds a new job.
+// Enqueue adds a new standard (per-camera) processing job.
 func (jq *JobQueue) Enqueue(session *RecordingSession, patientDir string) error {
 	snap := session.Snapshot()
 	snapData, err := MarshalSnapshot(snap)
@@ -117,6 +120,38 @@ func (jq *JobQueue) Enqueue(session *RecordingSession, patientDir string) error 
 		Status:      JobStatusPending,
 		CreatedAt:   time.Now(),
 		SessionData: snapData,
+		IsComposite: false,
+	}
+
+	if err := jq.saveJob(job); err != nil {
+		return fmt.Errorf("save job: %w", err)
+	}
+
+	jq.mu.Lock()
+	jq.totalJobs++
+	jq.mu.Unlock()
+
+	jq.queue <- job
+	return nil
+}
+
+// EnqueueComposite adds a new composite decompose job. The job will crop each
+// camera cell out of compositeFile and produce individual camera videos.
+func (jq *JobQueue) EnqueueComposite(session *RecordingSession, patientDir, compositeFile string) error {
+	snap := session.Snapshot()
+	snapData, err := MarshalSnapshot(snap)
+	if err != nil {
+		return fmt.Errorf("marshal session: %w", err)
+	}
+
+	job := ProcessingJob{
+		ID:            snap.ID,
+		PatientDir:    patientDir,
+		Status:        JobStatusPending,
+		CreatedAt:     time.Now(),
+		SessionData:   snapData,
+		IsComposite:   true,
+		CompositeFile: compositeFile,
 	}
 
 	if err := jq.saveJob(job); err != nil {
@@ -239,7 +274,7 @@ func (jq *JobQueue) processJob(ctx context.Context, job ProcessingJob) {
 	_ = jq.saveJob(job)
 
 	if jq.logger != nil {
-		jq.logger.Printf("[job_queue] Processing job %s for %s", job.ID, job.PatientDir)
+		jq.logger.Printf("[job_queue] Processing job %s for %s (composite=%v)", job.ID, job.PatientDir, job.IsComposite)
 	}
 
 	snap, err := UnmarshalSnapshot(job.SessionData)
@@ -251,11 +286,78 @@ func (jq *JobQueue) processJob(ctx context.Context, job ProcessingJob) {
 			jq.logger.Printf("[job_queue] Failed to unmarshal session for job %s: %v", job.ID, err)
 		}
 		if jq.onComplete != nil {
-			jq.onComplete(job.ID, job.Status)
+			jq.onComplete(job.ID, job.Status, job.IsComposite)
 		}
 		return
 	}
 
+	var cameras []CameraRecording
+	for _, cam := range snap.Cameras {
+		cameras = append(cameras, *cam)
+	}
+
+	if job.IsComposite {
+		// Composite decompose path: crop individual camera videos from the composite file.
+		progressCh := make(chan float64, 10)
+		go func() {
+			for p := range progressCh {
+				jq.mu.Lock()
+				cb := jq.onProgress
+				jq.mu.Unlock()
+				if cb != nil {
+					cb(job.ID, p*100.0, JobStatusProcessing, job.IsComposite)
+				}
+			}
+		}()
+
+		result := jq.postProc.DecomposeComposite(ctx, job.CompositeFile, cameras, snap.Cols, job.PatientDir, progressCh)
+		close(progressCh)
+
+		job.CompletedAt = time.Now()
+		if result.Err != nil && result.Err != context.Canceled {
+			job.Status = JobStatusFailed
+			job.Error = result.Err.Error()
+			if jq.logger != nil {
+				jq.logger.Printf("[job_queue] Composite job %s failed: %v", job.ID, result.Err)
+			}
+		} else if result.Err == context.Canceled {
+			job.Status = JobStatusPending
+			_ = jq.saveJob(job)
+			jq.mu.Lock()
+			jq.activeJobs--
+			jq.mu.Unlock()
+			return
+		} else {
+			job.Status = JobStatusCompleted
+			if jq.logger != nil {
+				jq.logger.Printf("[job_queue] Composite job %s completed", job.ID)
+			}
+			info, infoErr := LoadPatientInfo(job.PatientDir)
+			if infoErr == nil {
+				for _, file := range result.Files {
+					info.Videos = append(info.Videos, VideoFile{
+						FileName: filepath.Base(file),
+						Type:     "camera",
+					})
+				}
+				_ = SavePatientInfo(job.PatientDir, info)
+			}
+		}
+		_ = jq.saveJob(job)
+		jq.mu.Lock()
+		jq.activeJobs--
+		if job.Status == JobStatusCompleted || job.Status == JobStatusFailed {
+			jq.totalJobs--
+		}
+		cb := jq.onComplete
+		jq.mu.Unlock()
+		if cb != nil {
+			cb(job.ID, job.Status, job.IsComposite)
+		}
+		return
+	}
+
+	// Standard (per-camera) path
 	progressCh := make(chan float64, 10)
 	go func() {
 		for p := range progressCh {
@@ -264,15 +366,10 @@ func (jq *JobQueue) processJob(ctx context.Context, job ProcessingJob) {
 			jq.mu.Unlock()
 			if cb != nil {
 				// individual cameras = 70% of work
-				cb(job.ID, p*70.0, JobStatusProcessing)
+				cb(job.ID, p*70.0, JobStatusProcessing, job.IsComposite)
 			}
 		}
 	}()
-
-	var cameras []CameraRecording
-	for _, cam := range snap.Cameras {
-		cameras = append(cameras, *cam)
-	}
 
 	result := jq.postProc.ProcessIndividualCameras(ctx, snap, cameras, job.PatientDir, progressCh)
 	close(progressCh)
@@ -287,7 +384,7 @@ func (jq *JobQueue) processJob(ctx context.Context, job ProcessingJob) {
 				jq.mu.Unlock()
 				if cb != nil {
 					// general video = 30% of work
-					cb(job.ID, 70.0+p*30.0, JobStatusProcessing)
+					cb(job.ID, 70.0+p*30.0, JobStatusProcessing, job.IsComposite)
 				}
 			}
 		}()
@@ -349,6 +446,6 @@ func (jq *JobQueue) processJob(ctx context.Context, job ProcessingJob) {
 	cb := jq.onComplete
 	jq.mu.Unlock()
 	if cb != nil {
-		cb(job.ID, job.Status)
+		cb(job.ID, job.Status, job.IsComposite)
 	}
 }

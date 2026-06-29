@@ -13,12 +13,10 @@
   "btn_cancel": "İptal",
   "btn_save_close": "Kaydet ve Kapat",
   "btn_help": "?",
-
   "opt_passive": "Pasif (Devre Dışı)",
   "opt_ip_camera": "IP Kamera",
   "opt_webcam_format": "Webcam: %s (%s)",
   "opt_webcam_disconnected": "Webcam: Bağlı Değil (%s)",
-
   "msg_max_ip_camera": "En fazla 1 adet IP kamera eklenmesine izin verilir.",
   "msg_max_cameras": "Maksimum %d kamera eklenebilir.",
   "msg_min_cameras": "Minimum %d kamera olmalı.",
@@ -27,14 +25,12 @@
   "msg_webcam_not_found": "Webcam bulunamadı",
   "msg_cameras_searching": "Kameralar Aranıyor",
   "msg_please_wait": "Lütfen bekleyin...",
-
   "title_delete_camera": "Kamera Sil",
   "title_add_camera": "Kamera Ekle",
   "title_settings": "NystaVision Ayarları",
   "title_general_settings": "── Genel Ayarlar ──",
   "title_app": "NystaVision",
   "title_lang_restart": "Yeniden Başlat",
-
   "lbl_camera_name": "Kamera İsmi",
   "lbl_name": "İsim",
   "lbl_type": "Tip",
@@ -56,25 +52,19 @@
   "lbl_status_bar": "%d/%d aktif",
   "lbl_status_bar_rec": "Kayıt: %s",
   "lbl_camera_count": "%d Kamera",
-
   "btn_toolbar_add": "Ekle",
   "btn_toolbar_remove": "Sil",
   "btn_toolbar_save_layout": "Kaydet",
   "btn_toolbar_load_layout": "Yükle",
-
   "err_limit": "Limit",
   "err_selection": "Seçim",
   "err_camera_limit": "Maksimum %d kamera eklenebilir.",
-
   "default_camera_name": "Kamera %d",
   "placeholder_camera_name": "Kamera ismi",
   "placeholder_url": "http://... veya rtsp://...",
-
   "menu_edit": "Düzenle",
   "menu_record_single": "Sadece bu kamera için kayıt başlat",
-
   "msg_lang_restart": "Dili değiştirmek için uygulamanın yeniden başlatılması gerekiyor. Onaylıyor musunuz?",
-
   "layout_save_title": "Layout Kaydet",
   "layout_save_btn": "Kaydet",
   "layout_load_title": "Layout Yükle",
@@ -87,17 +77,14 @@
   "layout_empty": "Kaydedilmiş layout bulunamadı.",
   "layout_empty_title": "Boş",
   "layout_cameras": "%s (%d kamera)",
-
   "close_title": "NystaVision'dan Çıkış",
   "close_message": "Ne yapmak istersiniz?",
   "close_btn_background": "Arka planda çalışmaya devam et",
   "close_btn_quit": "Tamamen kapat",
-
   "tray_show": "Göster",
   "tray_start_all": "Tüm Kameraları Başlat",
   "tray_stop_all": "Tüm Kameraları Durdur",
   "tray_quit": "Çıkış",
-
   "record_patient_title": "Kayıt Tamamlandı",
   "record_patient_label": "Hasta adı:",
   "record_patient_placeholder": "Hasta adı",
@@ -109,7 +96,6 @@
   "record_done_close": "Kapat",
   "record_locked_title": "Kayıt Devam Ediyor",
   "record_locked_msg": "Kayıt durdurulana kadar kamera, yayın, yerleşim ve kayıt klasörü ayarları kilitlidir.",
-
   "tutorial_skip": "Atla",
   "tutorial_next": "İleri",
   "tutorial_prev": "Geri",
@@ -125,7 +111,6 @@
   "tutorial_desc_3": "Kayıt butonuyla tüm kameraları aynı anda kaydedebilirsiniz. Kaydı durdurduğunuzda hasta adı girmeniz istenecek ve her kamera için ayrı video oluşturulacak.",
   "tutorial_title_4": "Ayarlar",
   "tutorial_desc_4": "⚙ butonundan dil, otomatik başlatma ve kayıtların kaydedileceği klasörü seçebilirsiniz. Bu turu istediğiniz zaman ? butonuyla tekrar açabilirsiniz.",
-
   "msg_already_running": "Uygulama zaten çalışıyor.",
   "btn_yes": "Evet",
   "btn_no": "Hayır",
@@ -152,5 +137,15 @@
   "tutorial_title_5": "Kamera Düzenleri (Layouts)",
   "tutorial_desc_5": "Düzenler butonuyla kamera listesini, pencere boyutunu ve bölme çizgilerini isimlendirerek kaydedebilir, daha sonra listeden tek tıkla yükleyip silebilirsiniz.",
   "tutorial_title_6": "Kamera Seçenekleri (Sağ Tık)",
-  "tutorial_desc_6": "Herhangi bir kamera paneline sağ tıklayarak kameranın ismini, çözünürlüğünü, FPS değerini düzenleyebilir veya sadece o kamera için özel kayıt başlatabilirsiniz."
+  "tutorial_desc_6": "Herhangi bir kamera paneline sağ tıklayarak kameranın ismini, çözünürlüğünü, FPS değerini düzenleyebilir veya sadece o kamera için özel kayıt başlatabilirsiniz.",
+
+  "lbl_composite_recording": "Anlık Kayıt Modu (Önerilen)",
+  "lbl_composite_section": "── Kayıt Modu ──",
+  "lbl_composite_on_title": "✅  Anlık Kayıt Modu Açık",
+  "lbl_composite_on_desc": "Tüm kameralar aynı anda tek bir videoya kaydedilir. Kaydı durdurduğunuzda video hemen hazır olur — beklemenize gerek yoktur. Bireysel kamera videoları arka planda otomatik olarak ayrıştırılır.\n\n• Düşük ve orta donanımlı cihazlar için idealdir\n• Bekleme süresi yoktur\n• 60 FPS'te akıcı kayıt\n• Kamera başına özel çözünürlük/FPS ayarlanamaz (her kamera sabit boyutta kaydedilir)",
+  "lbl_composite_off_title": "⚙️  Ayrı Kayıt Modu Açık",
+  "lbl_composite_off_desc": "Her kamera ayrı ayrı kaydedilir. Kaydı durdurduğunuzda videolar birleştirilerek oluşturulur; bu işlem cihaza ve kayıt süresine bağlı olarak uzun sürebilir.\n\n• Her kamera için ayrı çözünürlük ve FPS seçilebilir\n• Güçlü donanım gerektirir\n• Kayıt sonrası işlem süresi uzun olabilir",
+  "record_composite_done_msg": "Kayıt tamamlandı!\nVideo hazırlandı. Bireysel kamera videoları arka planda ayrıştırılıyor.",
+  "perf_warning_msg": "Sistem Zorlanıyor: FPS %d'ye düşürüldü",
+  "msg_composite_format_disabled": "Anlık Kayıt modu açık olduğu için çözünürlük otomatik yönetilir. (Değiştirmek için Ayarlar'dan bu modu kapatın)"
 }

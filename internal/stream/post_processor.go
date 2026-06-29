@@ -129,7 +129,8 @@ func (p *PostProcessor) ProcessIndividualCameras(
 			if safeName == "" {
 				safeName = sanitizeFilename(camera.ID)
 			}
-			outFile := filepath.Join(outDir, fmt.Sprintf("%s_%s.mp4", safeName, timestamp))
+			// Append camera.ID to ensure the file name is strictly unique, even if the user names multiple cameras the same.
+			outFile := filepath.Join(outDir, fmt.Sprintf("%s_%s_%s.mp4", safeName, camera.ID, timestamp))
 
 			if err := p.renderCamera(ctx, snapshot, camera, outFile, func(f float64) { tracker.updateJob(outFile, f) }); err != nil {
 				mu.Lock()
@@ -245,7 +246,8 @@ func (p *PostProcessor) Process(
 			if safeName == "" {
 				safeName = sanitizeFilename(camera.ID)
 			}
-			outFile := filepath.Join(outDir, fmt.Sprintf("%s_%s.mp4", safeName, timestamp))
+			// Append camera.ID to ensure the file name is strictly unique
+			outFile := filepath.Join(outDir, fmt.Sprintf("%s_%s_%s.mp4", safeName, camera.ID, timestamp))
 			
 			if err := p.renderCamera(ctx, snapshot, camera, outFile, func(f float64) { tracker.updateJob(outFile, f) }); err != nil {
 				mu.Lock()
@@ -789,5 +791,109 @@ func (p *PostProcessor) renderGeneralFromSegments(
 	}
 	
 	return p.runEncoded(ctx, args, outFile, duration, onProgress)
+}
+
+// DecomposeComposite crops each camera cell out of a composite video file and
+// saves individual MP4 files. This is the background job run after a composite
+// recording session completes.
+//
+// The composite video is expected to have cells of size CompositeCellW ×
+// CompositeCellH arranged in a cols-wide grid (rows = ceil(numCameras/cols)).
+func (p *PostProcessor) DecomposeComposite(
+	ctx context.Context,
+	compositeFile string,
+	cameras []CameraRecording,
+	cols int,
+	outDir string,
+	progress chan<- float64,
+) ProcessResult {
+	if cols <= 0 {
+		cols = 1
+	}
+	if len(cameras) == 0 {
+		return ProcessResult{OutputDir: outDir, Err: fmt.Errorf("no cameras in session")}
+	}
+
+	// Verify composite file exists.
+	if info, err := os.Stat(compositeFile); err != nil || info.Size() == 0 {
+		return ProcessResult{OutputDir: outDir, Err: fmt.Errorf("composite file not found or empty: %s", compositeFile)}
+	}
+
+	timestamp := time.Now().Format("20060102_150405")
+	sortCameraRecordings(cameras)
+
+	tracker := &progressTracker{
+		totalJobs:   len(cameras),
+		activeJobs:  make(map[string]float64),
+		progressOut: progress,
+	}
+
+	var files []string
+	var mu sync.Mutex
+	var firstErr error
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	sem := make(chan struct{}, 2)
+	var wg sync.WaitGroup
+
+	for i := range cameras {
+		camera := cameras[i]
+		camIdx := i
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			col := camIdx % cols
+			row := camIdx / cols
+			x := col * CompositeCellW
+			y := row * CompositeCellH
+
+			safeName := sanitizeFilename(camera.Name)
+			if safeName == "" {
+				safeName = sanitizeFilename(camera.ID)
+			}
+			// Append camera.ID to ensure the file name is strictly unique, even if the user names multiple cameras the same.
+			outFile := filepath.Join(outDir, fmt.Sprintf("%s_%s_%s.mp4", safeName, camera.ID, timestamp))
+
+			// Use FFmpeg crop to extract this camera's cell from the composite.
+			args := []string{
+				"-hide_banner", "-loglevel", "warning", "-stats",
+				"-i", compositeFile,
+				"-vf", fmt.Sprintf("crop=%d:%d:%d:%d", CompositeCellW, CompositeCellH, x, y),
+				"-an",
+			}
+
+			jobKey := outFile
+			if err := p.runEncoded(ctx, args, outFile, 0, func(f float64) {
+				tracker.updateJob(jobKey, f)
+			}); err != nil {
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = fmt.Errorf("decompose camera %s: %w", camera.Name, err)
+					cancel()
+				}
+				mu.Unlock()
+			} else {
+				tracker.finishJob(jobKey)
+				mu.Lock()
+				files = append(files, outFile)
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+
+	if ctx.Err() != nil && firstErr == nil {
+		return ProcessResult{OutputDir: outDir, Files: files, Err: ctx.Err()}
+	}
+	if firstErr != nil {
+		return ProcessResult{OutputDir: outDir, Files: files, Err: firstErr}
+	}
+	return ProcessResult{OutputDir: outDir, Files: files}
 }
 

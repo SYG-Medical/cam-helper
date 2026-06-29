@@ -18,7 +18,7 @@ const (
 	fileName  = "config.json"
 
 	MinCameras = 2
-	MaxCameras = 9
+	MaxCameras = 4
 )
 
 // CameraSource describes a single camera input (RTSP stream or local webcam).
@@ -65,6 +65,7 @@ type Config struct {
 
 	// Feature flags
 	DisableHardwareAccel bool `json:"disable_hw_accel"`
+	CompositeRecording   bool `json:"composite_recording"` // true = record all cameras into a single composite video instantly
 
 	// Multi-camera fields
 	Cameras          []CameraSource `json:"cameras"`
@@ -88,8 +89,9 @@ type legacyConfigJSON struct {
 
 func Default() Config {
 	return Config{
-		AutoStart:     false,
-		FFmpegPath:    "",
+		AutoStart:           false,
+		FFmpegPath:          "",
+		CompositeRecording:  true,
 		LogLevel:      "info",
 		Language:      detectSystemLanguage(),
 		TutorialShown:   false,

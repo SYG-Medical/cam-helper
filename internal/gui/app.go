@@ -78,11 +78,19 @@ type App struct {
 	isRecording   bool
 	recordSession *stream.RecordingSession
 
+	// Composite recording
+	compositeRecorder *stream.CompositeRecorder
+
 	// Disk space live monitoring
 	diskBanner      *fyne.Container
 	diskBannerBg    *canvas.Rectangle
 	diskBannerText  *canvas.Text
 	diskMonitorStop chan struct{}
+
+	// Performance warning banner (shown when composite FPS is auto-reduced)
+	perfBanner     *fyne.Container
+	perfBannerBg   *canvas.Rectangle
+	perfBannerText *canvas.Text
 
 	// Status bar elements
 	statusBarLabel     *canvas.Text
@@ -95,6 +103,13 @@ type App struct {
 	layoutListContainer *fyne.Container
 	layoutsRef          *widget.Button // for spotlight tutorials
 	drawerVisible       bool
+
+	overlayContainer *fyne.Container
+
+	settingsDialog         dialog.Dialog
+	settingsLangSelect     *widget.Select
+	settingsAutostartCheck *widget.Check
+	settingsCompositeCheck *widget.Check
 
 	removeBtn        *widget.Button
 	isCompactToolbar bool
@@ -211,7 +226,10 @@ func (a *App) setupUI() {
 		mainContent,
 	)
 
-	a.window.SetContent(content)
+	a.overlayContainer = container.NewStack()
+	stackedContent := container.NewStack(content, a.overlayContainer)
+
+	a.window.SetContent(stackedContent)
 
 	// Apply split offsets on startup if we have saved ones
 	if len(a.cfg.SplitOffsets) > 0 {
@@ -340,7 +358,7 @@ func (a *App) toggleAllStreams() {
 	}
 
 	content := container.NewVBox(widget.NewLabel(i18n.T("msg_please_wait")), widget.NewProgressBarInfinite())
-	progress := dialog.NewCustomWithoutButtons(i18n.T("msg_please_wait"), content, a.window)
+	progress := a.NewToastProgress(i18n.T("msg_please_wait"), content)
 	progress.Show()
 
 	go func() {
@@ -650,7 +668,8 @@ func (a *App) showEditCameraDialog(cameraID string) {
 		return
 	}
 
-	progress := dialog.NewCustom(i18n.T("msg_cameras_searching"), i18n.T("msg_please_wait"), widget.NewProgressBarInfinite(), a.window)
+	content := container.NewVBox(widget.NewLabel(i18n.T("msg_please_wait")), widget.NewProgressBarInfinite())
+	progress := a.NewToastProgress(i18n.T("msg_cameras_searching"), content)
 	progress.Show()
 
 	go func() {
@@ -673,22 +692,33 @@ func (a *App) showEditCameraDialog(cameraID string) {
 			formatSelect.SetSelected(i18n.T("lbl_format_auto"))
 
 			var linuxFPSEntry *widget.Entry
-			var accItem *widget.AccordionItem
+			var formatUI fyne.CanvasObject = formatSelect
+
 			if runtime.GOOS == "linux" {
 				linuxFPSEntry = widget.NewEntry()
 				linuxFPSEntry.SetPlaceHolder("Örn: 60 (Sadece rakam)")
 				if selectedCam.FPS > 0 {
 					linuxFPSEntry.SetText(strconv.Itoa(selectedCam.FPS))
 				}
-				vbox := container.NewVBox(
+				formatUI = container.NewVBox(
 					formatSelect,
 					widget.NewLabel("Linux FPS Zorlama:"),
 					linuxFPSEntry,
 				)
-				accItem = widget.NewAccordionItem(i18n.T("lbl_camera_format"), vbox)
-			} else {
-				accItem = widget.NewAccordionItem(i18n.T("lbl_camera_format"), formatSelect)
 			}
+
+			if a.cfg.CompositeRecording {
+				formatSelect.Disable()
+				if linuxFPSEntry != nil {
+					linuxFPSEntry.Disable()
+				}
+				warningLbl := widget.NewLabel(i18n.T("msg_composite_format_disabled"))
+				warningLbl.Wrapping = fyne.TextWrapWord
+				warningLbl.TextStyle = fyne.TextStyle{Italic: true}
+				formatUI = container.NewVBox(warningLbl, formatUI)
+			}
+
+			accItem := widget.NewAccordionItem(i18n.T("lbl_camera_format"), formatUI)
 			formatAccordion := widget.NewAccordion(accItem)
 
 			webcamSelect := widget.NewSelect(nil, nil)
@@ -801,14 +831,23 @@ func (a *App) showEditCameraDialog(cameraID string) {
 				widget.NewFormItem("", formatAccordion),
 			}
 
-			form := dialog.NewForm(fmt.Sprintf("%s - %s", i18n.T("menu_edit"), selectedCam.Name), i18n.T("btn_save"), i18n.T("btn_cancel"), formItems, func(ok bool) {
-				defer a.refreshCameraDropdowns()
-				if !ok {
-					return
-				}
+			innerForm := widget.NewForm(formItems...)
+			scrollableContent := container.NewVScroll(innerForm)
+			scrollableContent.SetMinSize(fyne.NewSize(500, 450))
 
-				a.mu.Lock()
-				defer a.mu.Unlock()
+			d := dialog.NewCustomConfirm(
+				fmt.Sprintf("%s - %s", i18n.T("menu_edit"), selectedCam.Name),
+				i18n.T("btn_save"),
+				i18n.T("btn_cancel"),
+				scrollableContent,
+				func(ok bool) {
+					defer a.refreshCameraDropdowns()
+					if !ok {
+						return
+					}
+
+					a.mu.Lock()
+					defer a.mu.Unlock()
 
 				camPtr := &a.cfg.Cameras[selectedIdx]
 				camPtr.Name = nameEntry.Text
@@ -847,8 +886,8 @@ func (a *App) showEditCameraDialog(cameraID string) {
 					panel.SetName(camPtr.Name)
 				}
 			}, a.window)
-			form.Resize(fyne.NewSize(450, 400))
-			form.Show()
+			d.Resize(fyne.NewSize(500, 450))
+			d.Show()
 		})
 	}()
 }
@@ -926,6 +965,14 @@ func (a *App) setupFrameCallbacks() {
 				return
 			}
 			panel.UpdateFrame(width, height, pix)
+
+			// Feed to composite recorder if running
+			a.mu.Lock()
+			compRec := a.compositeRecorder
+			a.mu.Unlock()
+			if compRec != nil {
+				compRec.UpdateFrame(camID, width, height, pix)
+			}
 		})
 	}
 }
@@ -949,7 +996,8 @@ func (a *App) showAddCameraDialog() {
 		return
 	}
 
-	progress := dialog.NewCustom(i18n.T("msg_cameras_searching"), i18n.T("msg_please_wait"), widget.NewProgressBarInfinite(), a.window)
+	content := container.NewVBox(widget.NewLabel(i18n.T("msg_please_wait")), widget.NewProgressBarInfinite())
+	progress := a.NewToastProgress(i18n.T("msg_cameras_searching"), content)
 	progress.Show()
 
 	go func() {
@@ -999,10 +1047,19 @@ func (a *App) showAddCameraDialog() {
 				widget.NewFormItem(i18n.T("lbl_webcam"), webcamSelect),
 			}
 
-			d := dialog.NewForm(i18n.T("title_add_camera"), i18n.T("btn_add_camera"), i18n.T("btn_cancel"), formItems, func(ok bool) {
-				if !ok {
-					return
-				}
+			innerForm := widget.NewForm(formItems...)
+			scrollableContent := container.NewVScroll(innerForm)
+			scrollableContent.SetMinSize(fyne.NewSize(500, 300))
+
+			d := dialog.NewCustomConfirm(
+				i18n.T("title_add_camera"),
+				i18n.T("btn_add_camera"),
+				i18n.T("btn_cancel"),
+				scrollableContent,
+				func(ok bool) {
+					if !ok {
+						return
+					}
 
 				if sourceType.Selected == "IP" {
 					hasRTSP := false
@@ -1052,7 +1109,7 @@ func (a *App) showAddCameraDialog() {
 				a.rebuildGrid()
 			}, a.window)
 
-			d.Resize(fyne.NewSize(450, 300))
+			d.Resize(fyne.NewSize(500, 350))
 			d.Show()
 		})
 	}()
@@ -1189,7 +1246,12 @@ func (a *App) startRecording() {
 		return
 	}
 
-	availableMins := stream.EstimateCameraRecordingAvailableMinutes(freeBytes, recordings, cols, rows)
+	var availableMins float64
+	if a.cfg.CompositeRecording {
+		availableMins = stream.EstimateCompositeAvailableMinutes(freeBytes, len(recordings), cols, rows)
+	} else {
+		availableMins = stream.EstimateCameraRecordingAvailableMinutes(freeBytes, recordings, cols, rows)
+	}
 	a.logger.Printf("[recording] disk space check: freeBytes=%d, estimated_mins=%.2f", freeBytes, availableMins)
 
 	if availableMins < 1.0 {
@@ -1217,16 +1279,58 @@ func (a *App) proceedWithRecording(cameras []stream.CameraRecording, cols, rows 
 	}
 
 	content := container.NewVBox(widget.NewLabel(i18n.T("msg_please_wait")), widget.NewProgressBarInfinite())
-	progress := dialog.NewCustomWithoutButtons(i18n.T("msg_please_wait"), content, a.window)
+	progress := a.NewToastProgress(i18n.T("msg_please_wait"), content)
 	progress.Show()
 
 	go func() {
-		err := a.multiManager.StartRecording(session, a.postProc.HardwareProfile())
+		var startErr error
+		if a.cfg.CompositeRecording {
+			// In composite mode, we don't restart FFmpeg pipelines. We just start
+			// the composite recorder which reads from existing preview frames.
+			session.UpdateStartTime(time.Now())
+			ffmpegPath, _ := stream.ResolveFFmpegPath(a.cfg.FFmpegPath)
+			outFile := filepath.Join(patientDir, fmt.Sprintf("Genel_%s.mp4", time.Now().Format("20060102_150405")))
+			
+			cameraOrder := make([]string, len(cameras))
+			for i, c := range cameras {
+				cameraOrder[i] = c.ID
+			}
+
+			a.mu.Lock()
+			a.compositeRecorder = stream.NewCompositeRecorder(
+				ffmpegPath,
+				outFile,
+				cameraOrder,
+				cols, rows,
+				a.logger,
+				func(fps int) {
+					fyne.Do(func() {
+						a.updatePerfBanner(fps)
+						if a.perfBanner != nil {
+							a.perfBanner.Show()
+						}
+					})
+				},
+			)
+			a.mu.Unlock()
+
+			startErr = a.compositeRecorder.Start()
+			
+			fyne.Do(func() {
+				a.initPerfBanner()
+			})
+		} else {
+			startErr = a.multiManager.StartRecording(session, a.postProc.HardwareProfile())
+		}
+
 		fyne.Do(func() {
 			progress.Hide()
-			if err != nil {
+			if startErr != nil {
 				_ = os.RemoveAll(session.TempDir)
-				dialog.ShowError(err, a.window)
+				a.mu.Lock()
+				a.compositeRecorder = nil
+				a.mu.Unlock()
+				dialog.ShowError(startErr, a.window)
 				return
 			}
 
@@ -1512,9 +1616,12 @@ func (a *App) stopRecording() {
 	a.isRecording = false
 	session := a.recordSession
 	a.recordSession = nil
+	compositeRec := a.compositeRecorder
+	a.compositeRecorder = nil
 	a.mu.Unlock()
 
 	a.stopDiskMonitor()
+	a.hidePerfBanner()
 
 	if a.recordTimer != nil {
 		a.recordTimer.Stop()
@@ -1534,8 +1641,75 @@ func (a *App) stopRecording() {
 		return
 	}
 
+	// ---------------------------------------------------------------
+	// COMPOSITE MODE: CompositeRecorder writes the video in real-time.
+	// Stop it (flushes FFmpeg), video is immediately available.
+	// ---------------------------------------------------------------
+	if compositeRec != nil {
+		content := container.NewVBox(widget.NewLabel(i18n.T("msg_please_wait")), widget.NewProgressBarInfinite())
+		progress := a.NewToastProgress(i18n.T("msg_please_wait"), content)
+		progress.Show()
+
+		go func() {
+			// 1. Finalize the composite video file.
+			err := compositeRec.Stop()
+			// 2. Finalize session timestamps.
+			a.multiManager.StopRecording(session)
+
+			actualPatientDir := filepath.Dir(session.TempDir)
+			compositeFile := compositeRec.OutFile()
+
+			fyne.Do(func() {
+				progress.Hide()
+
+				if err != nil {
+					dialog.ShowError(fmt.Errorf("Genel video kaydedilemedi: %v", err), a.window)
+					return
+				}
+
+				// Save composite file reference to patient info.
+				info, infoErr := stream.LoadPatientInfo(actualPatientDir)
+				if infoErr == nil {
+					info.Videos = append(info.Videos, stream.VideoFile{
+						FileName: filepath.Base(compositeFile),
+						Type:     "general",
+					})
+					_ = stream.SavePatientInfo(actualPatientDir, info)
+				}
+
+				// Enqueue background decompose job.
+				if a.jobQueue != nil {
+					_ = a.jobQueue.EnqueueComposite(session, actualPatientDir, compositeFile)
+				}
+
+				// Show instant success dialog.
+				msg := i18n.T("record_composite_done_msg")
+				openBtn := widget.NewButtonWithIcon(i18n.T("record_done_open"), theme.FolderOpenIcon(), func() {
+					openPath(actualPatientDir)
+				})
+				openBtn.Importance = widget.HighImportance
+				closeBtn := widget.NewButton(i18n.T("record_done_close"), nil)
+
+				btnRow := container.NewHBox(layout.NewSpacer(), openBtn, closeBtn)
+				successContent := container.NewVBox(widget.NewLabel(msg), btnRow)
+
+				successDlg := dialog.NewCustomWithoutButtons(
+					i18n.T("record_done_title"),
+					successContent,
+					a.window,
+				)
+				closeBtn.OnTapped = func() { successDlg.Hide() }
+				successDlg.Show()
+			})
+		}()
+		return
+	}
+
+	// ---------------------------------------------------------------
+	// STANDARD MODE: per-camera MJPEG segments → post-process
+	// ---------------------------------------------------------------
 	content := container.NewVBox(widget.NewLabel(i18n.T("msg_please_wait")), widget.NewProgressBarInfinite())
-	progress := dialog.NewCustomWithoutButtons(i18n.T("msg_please_wait"), content, a.window)
+	progress := a.NewToastProgress(i18n.T("msg_please_wait"), content)
 	progress.Show()
 
 	go func() {
@@ -1638,6 +1812,50 @@ func (a *App) stopRecording() {
 			}()
 		})
 	}()
+}
+
+// --- Perf Banner (composite FPS auto-reduction warning) ---
+
+func (a *App) initPerfBanner() {
+	if a.perfBanner != nil {
+		return
+	}
+	a.perfBannerBg = canvas.NewRectangle(color.NRGBA{R: 231, G: 76, B: 60, A: 220})
+	a.perfBannerBg.CornerRadius = 4
+	a.perfBannerText = canvas.NewText("", color.NRGBA{R: 236, G: 240, B: 241, A: 255})
+	a.perfBannerText.TextStyle = fyne.TextStyle{Bold: true}
+	a.perfBannerText.Alignment = fyne.TextAlignCenter
+	a.perfBannerText.TextSize = 14
+
+	textContainer := container.NewPadded(a.perfBannerText)
+	bannerStack := container.NewStack(a.perfBannerBg, textContainer)
+	marginContainer := container.NewPadded(bannerStack)
+
+	// Place at the top of the grid container.
+	a.perfBanner = container.NewBorder(
+		container.NewVBox(marginContainer),
+		nil, nil, nil,
+	)
+	a.perfBanner.Hide()
+
+	if a.gridContainer != nil {
+		a.gridContainer.Add(a.perfBanner)
+	}
+}
+
+func (a *App) updatePerfBanner(fps int) {
+	if a.perfBannerText == nil || a.perfBannerBg == nil {
+		return
+	}
+	a.perfBannerText.Text = fmt.Sprintf(i18n.T("perf_warning_msg"), fps)
+	a.perfBannerBg.Refresh()
+	a.perfBannerText.Refresh()
+}
+
+func (a *App) hidePerfBanner() {
+	if a.perfBanner != nil {
+		a.perfBanner.Hide()
+	}
 }
 
 func (a *App) showPatientNameDialogForRecording(cameras []stream.CameraRecording, cols, rows int) {
@@ -1789,24 +2007,61 @@ func (a *App) showSettingsDialog() {
 
 	recordingsRow := container.NewBorder(nil, nil, widget.NewLabel(i18n.T("lbl_recordings_dir")+": "), browseBtn, recordingsDirEntry)
 
-	settingsContent := container.NewVBox(
+	compositeCheck := widget.NewCheck(i18n.T("lbl_composite_recording"), nil)
+	compositeCheck.SetChecked(a.cfg.CompositeRecording)
+
+	compositeTitleLabel := widget.NewLabel("")
+	compositeTitleLabel.TextStyle = fyne.TextStyle{Bold: true}
+	compositeDescLabel := widget.NewLabel("")
+	compositeDescLabel.Wrapping = fyne.TextWrapWord
+
+	updateCompositeLabels := func(checked bool) {
+		if checked {
+			compositeTitleLabel.SetText(i18n.T("lbl_composite_on_title"))
+			compositeDescLabel.SetText(i18n.T("lbl_composite_on_desc"))
+		} else {
+			compositeTitleLabel.SetText(i18n.T("lbl_composite_off_title"))
+			compositeDescLabel.SetText(i18n.T("lbl_composite_off_desc"))
+		}
+	}
+
+	compositeCheck.OnChanged = updateCompositeLabels
+	updateCompositeLabels(a.cfg.CompositeRecording)
+
+	compositeGroup := container.NewVBox(
+		widget.NewLabelWithStyle(i18n.T("lbl_composite_section"), fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+		compositeCheck,
+		compositeTitleLabel,
+		compositeDescLabel,
+	)
+
+	settingsContent := container.NewVScroll(container.NewVBox(
 		widget.NewLabelWithStyle(i18n.T("title_general_settings"), fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
 		container.NewBorder(nil, nil, widget.NewLabel(i18n.T("lbl_language")+": "), nil, langSelect),
 		recordingsRow,
 		autostartCheck,
 		hwAccelCheck,
 		widget.NewSeparator(),
+		compositeGroup,
+		widget.NewSeparator(),
 		container.NewGridWithColumns(2, configBtn, logsBtn),
 		container.NewHBox(layout.NewSpacer(), versionText),
-	)
+	))
+	settingsContent.SetMinSize(fyne.NewSize(500, 400))
+
+	a.settingsLangSelect = langSelect
+	a.settingsAutostartCheck = autostartCheck
+	a.settingsCompositeCheck = compositeCheck
 
 	d := dialog.NewCustom(i18n.T("title_settings"), i18n.T("btn_save_close"), settingsContent, a.window)
-	d.Resize(fyne.NewSize(500, 280))
+	d.Resize(fyne.NewSize(550, 450))
+	a.settingsDialog = d
 
 	d.SetOnClosed(func() {
 		a.mu.Lock()
 		a.cfg.AutoStart = autostartCheck.Checked
 		a.cfg.DisableHardwareAccel = hwAccelCheck.Checked
+		a.cfg.CompositeRecording = compositeCheck.Checked
 		a.cfg.RecordingsDir = recordingsDirEntry.Text
 		_ = config.Save(*a.cfg, a.cfgPath)
 		a.mu.Unlock()
@@ -2196,6 +2451,57 @@ func (a *App) showTutorial() {
 		{TargetWidget: a.layoutsRef, TitleKey: "tutorial_title_5", DescKey: "tutorial_desc_5"},
 		{TargetWidget: firstPanel, TitleKey: "tutorial_title_6", DescKey: "tutorial_desc_6"},
 		{TargetWidget: a.settingsRef, TitleKey: "tutorial_title_4", DescKey: "tutorial_desc_4"},
+		{
+			OnEnter: func() {
+				// We wait slightly before opening the settings dialog so that the current
+				// click event (MouseUp on "Next" button) doesn't accidentally trigger a
+				// background tap on the settings dialog and close it immediately.
+				go func() {
+					time.Sleep(50 * time.Millisecond)
+					fyne.Do(func() {
+						a.showSettingsDialog()
+						
+						// Then we bring the tutorial to the front so it can highlight widgets
+						go func() {
+							time.Sleep(100 * time.Millisecond)
+							fyne.Do(func() {
+								ui.BringTutorialToFront()
+								ui.RefreshTutorial()
+							})
+						}()
+					})
+				}()
+			},
+			TargetWidgetFunc: func() fyne.CanvasObject { 
+				if a.settingsLangSelect == nil { return nil }
+				return a.settingsLangSelect 
+			},
+			TitleKey: "tutorial_settings_lang", DescKey: "tutorial_desc_settings_lang",
+		},
+		{
+			TargetWidgetFunc: func() fyne.CanvasObject { 
+				if a.settingsAutostartCheck == nil { return nil }
+				return a.settingsAutostartCheck 
+			},
+			TitleKey: "tutorial_settings_autostart", DescKey: "tutorial_desc_settings_autostart",
+		},
+		{
+			TargetWidgetFunc: func() fyne.CanvasObject { 
+				if a.settingsCompositeCheck == nil { return nil }
+				return a.settingsCompositeCheck 
+			},
+			TitleKey: "tutorial_settings_composite", DescKey: "tutorial_desc_settings_composite",
+		},
+		{
+			OnLeave: func() {
+				if a.settingsDialog != nil {
+					a.settingsDialog.Hide()
+					a.settingsDialog = nil
+				}
+			},
+			TargetWidgetFunc: func() fyne.CanvasObject { return nil },
+			TitleKey: "tutorial_settings_end", DescKey: "tutorial_desc_settings_end",
+		},
 	}
 
 	ui.ShowTutorial(a.window, steps, func() {
@@ -2203,7 +2509,32 @@ func (a *App) showTutorial() {
 		a.cfg.TutorialShown = true
 		_ = config.Save(*a.cfg, a.cfgPath)
 		a.mu.Unlock()
+
+		if a.settingsDialog != nil {
+			a.settingsDialog.Hide()
+			a.settingsDialog = nil
+		}
 	})
+}
+
+func (a *App) setMainButtonsEnabled(enabled bool) {
+	if enabled {
+		if a.addBtn != nil { a.addBtn.Enable() }
+		if a.removeBtn != nil { a.removeBtn.Enable() }
+		if a.startStopAllBtn != nil { a.startStopAllBtn.Enable() }
+		if a.settingsRef != nil { a.settingsRef.Enable() }
+		if a.layoutsRef != nil { a.layoutsRef.Enable() }
+		if a.recordBtn != nil { a.recordBtn.Enable() }
+		// Record button state is dynamically managed
+		a.updateRecordBtn()
+	} else {
+		if a.addBtn != nil { a.addBtn.Disable() }
+		if a.removeBtn != nil { a.removeBtn.Disable() }
+		if a.startStopAllBtn != nil { a.startStopAllBtn.Disable() }
+		if a.settingsRef != nil { a.settingsRef.Disable() }
+		if a.layoutsRef != nil { a.layoutsRef.Disable() }
+		if a.recordBtn != nil { a.recordBtn.Disable() }
+	}
 }
 
 // --- Tray ---
@@ -2435,20 +2766,24 @@ func (a *App) Run() error {
 
 		if jq != nil {
 			jq.SetCallbacks(
-				func(id string, progress float64, status string) {
+				func(id string, progress float64, status string, isComposite bool) {
 					fyne.Do(func() {
 						if a.jobQueueLabel != nil {
 							if status == stream.JobStatusProcessing {
 								active, total := jq.GetProgressInfo()
 								if total > 0 {
-									a.jobQueueLabel.Text = fmt.Sprintf("Arka planda işleniyor: %d / %d (%%%d)", active, total, int(progress))
+									jobName := "Kameralar işleniyor"
+									if isComposite {
+										jobName = "Genel video ayrıştırılıyor"
+									}
+									a.jobQueueLabel.Text = fmt.Sprintf("%s: %d / %d (%%%d)", jobName, active, total, int(progress))
 									a.jobQueueLabel.Refresh()
 								}
 							}
 						}
 					})
 				},
-				func(id string, status string) {
+				func(id string, status string, isComposite bool) {
 					fyne.Do(func() {
 						if status == stream.JobStatusCompleted {
 							a.sendOSNotification(i18n.T("title_app"), i18n.T("record_processing")+" tamamlandı!")
@@ -2596,14 +2931,10 @@ func (a *App) Quit() {
 	}
 	
 	fyne.Do(func() {
-		a.fyneApp.Quit()
-	})
-	
-	// Allow event loop to terminate, fallback to os.Exit
-	go func() {
-		time.Sleep(200 * time.Millisecond)
+		// Bypass a.fyneApp.Quit() due to fyne/systray dbus panic on Linux
+		// We have already closed multiManager and logger, so it's safe to exit.
 		os.Exit(0)
-	}()
+	})
 }
 
 func (a *App) statusLoop() {
