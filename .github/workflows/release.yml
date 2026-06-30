@@ -135,6 +135,6 @@ jobs:
           files: |
             all-artifacts/NystaVision-x86_64.AppImage
             all-artifacts/*.exe
-            # all-artifacts/NystaVision-macOS.zip
+#            all-artifacts/NystaVision-macOS.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
