@@ -28,9 +28,7 @@ jobs:
       - name: Build AppImage
         run: |
           mkdir -p internal/assets/third_party/ffmpeg
-          mkdir -p internal/assets/third_party/driver
           touch internal/assets/third_party/ffmpeg/placeholder.txt
-          touch internal/assets/third_party/driver/placeholder.txt
           VERSION=${{ github.ref_name }} make package-linux
 
       - name: Upload Artifact
@@ -52,28 +50,19 @@ jobs:
           go-version: '1.22'
           cache: true
 
-      - name: Download Dependencies (FFmpeg & Driver)
+      - name: Download Dependency (FFmpeg)
         shell: bash
         run: |
           set -e
           mkdir -p internal/assets/third_party/ffmpeg
-          mkdir -p internal/assets/third_party/driver
           
           echo "Downloading FFmpeg..."
           curl -L "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -o ffmpeg.zip
           unzip -q ffmpeg.zip
           mv ffmpeg-*/bin/ffmpeg.exe internal/assets/third_party/ffmpeg/
           
-          echo "Downloading UnityCapture Driver..."
-          curl -L "https://github.com/schellingb/UnityCapture/archive/refs/heads/master.zip" -o driver.zip
-          unzip -q driver.zip
-          
-          cp UnityCapture-master/Install/UnityCaptureFilter64.dll internal/assets/third_party/driver/virtual-camera-installer.dll
-          cp UnityCapture-master/Install/Install.bat internal/assets/third_party/driver/install.bat
-          touch internal/assets/third_party/driver/virtual-camera-bridge.exe
-          
           echo "Cleanup..."
-          rm -rf ffmpeg-*/ UnityCapture-master/ ffmpeg.zip driver.zip
+          rm -rf ffmpeg-*/ ffmpeg.zip
 
       - name: Install NSIS
         run: choco install nsis -y
