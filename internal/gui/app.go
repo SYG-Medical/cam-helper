@@ -16,6 +16,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/godbus/dbus/v5"
+
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/canvas"
@@ -1921,6 +1923,9 @@ func (a *App) showSettingsDialog() {
 	if a.blockWhileRecording() {
 		return
 	}
+	if a.settingsDialog != nil {
+		return
+	}
 	autostartCheck := widget.NewCheck(i18n.T("lbl_autostart"), nil)
 	autostartCheck.SetChecked(a.cfg.AutoStart)
 
@@ -2075,6 +2080,7 @@ func (a *App) showSettingsDialog() {
 		if a.multiManager != nil {
 			a.multiManager.UpdateConfig(*a.cfg)
 		}
+		a.settingsDialog = nil
 	})
 
 	d.Show()
@@ -2451,57 +2457,6 @@ func (a *App) showTutorial() {
 		{TargetWidget: a.layoutsRef, TitleKey: "tutorial_title_5", DescKey: "tutorial_desc_5"},
 		{TargetWidget: firstPanel, TitleKey: "tutorial_title_6", DescKey: "tutorial_desc_6"},
 		{TargetWidget: a.settingsRef, TitleKey: "tutorial_title_4", DescKey: "tutorial_desc_4"},
-		{
-			OnEnter: func() {
-				// We wait slightly before opening the settings dialog so that the current
-				// click event (MouseUp on "Next" button) doesn't accidentally trigger a
-				// background tap on the settings dialog and close it immediately.
-				go func() {
-					time.Sleep(50 * time.Millisecond)
-					fyne.Do(func() {
-						a.showSettingsDialog()
-						
-						// Then we bring the tutorial to the front so it can highlight widgets
-						go func() {
-							time.Sleep(100 * time.Millisecond)
-							fyne.Do(func() {
-								ui.BringTutorialToFront()
-								ui.RefreshTutorial()
-							})
-						}()
-					})
-				}()
-			},
-			TargetWidgetFunc: func() fyne.CanvasObject { 
-				if a.settingsLangSelect == nil { return nil }
-				return a.settingsLangSelect 
-			},
-			TitleKey: "tutorial_settings_lang", DescKey: "tutorial_desc_settings_lang",
-		},
-		{
-			TargetWidgetFunc: func() fyne.CanvasObject { 
-				if a.settingsAutostartCheck == nil { return nil }
-				return a.settingsAutostartCheck 
-			},
-			TitleKey: "tutorial_settings_autostart", DescKey: "tutorial_desc_settings_autostart",
-		},
-		{
-			TargetWidgetFunc: func() fyne.CanvasObject { 
-				if a.settingsCompositeCheck == nil { return nil }
-				return a.settingsCompositeCheck 
-			},
-			TitleKey: "tutorial_settings_composite", DescKey: "tutorial_desc_settings_composite",
-		},
-		{
-			OnLeave: func() {
-				if a.settingsDialog != nil {
-					a.settingsDialog.Hide()
-					a.settingsDialog = nil
-				}
-			},
-			TargetWidgetFunc: func() fyne.CanvasObject { return nil },
-			TitleKey: "tutorial_settings_end", DescKey: "tutorial_desc_settings_end",
-		},
 	}
 
 	ui.ShowTutorial(a.window, steps, func() {
@@ -2858,13 +2813,41 @@ func (a *App) Run() error {
 }
 
 func (a *App) sendOSNotification(title, message string) {
+	appName := i18n.T("title_app")
+	if appName == "" {
+		appName = "NystaVision"
+	}
+	fullTitle := appName
+	if title != "" && title != appName {
+		fullTitle = appName + " - " + title
+	}
+
 	if runtime.GOOS == "linux" {
-		cmd := exec.Command("notify-send", "-t", "4000", title, message)
-		if err := cmd.Run(); err == nil {
+		if err := sendLinuxDBusNotification(fullTitle, message, 4000); err == nil {
 			return
 		}
 	}
-	a.fyneApp.SendNotification(fyne.NewNotification(title, message))
+
+	a.fyneApp.SendNotification(fyne.NewNotification(fullTitle, message))
+}
+
+func sendLinuxDBusNotification(title, message string, timeoutMs int32) error {
+	conn, err := dbus.SessionBus()
+	if err != nil {
+		return err
+	}
+	obj := conn.Object("org.freedesktop.Notifications", "/org/freedesktop/Notifications")
+	call := obj.Call("org.freedesktop.Notifications.Notify", 0,
+		"NystaVision",              // app_name
+		uint32(0),                  // replaces_id
+		"nystavision",              // app_icon
+		title,                      // summary
+		message,                    // body
+		[]string{},                 // actions
+		map[string]dbus.Variant{},  // hints
+		timeoutMs,                  // expire_timeout in ms
+	)
+	return call.Err
 }
 
 func (a *App) Quit() {

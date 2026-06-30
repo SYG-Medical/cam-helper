@@ -110,7 +110,7 @@
   "tutorial_title_3": "Kayıt",
   "tutorial_desc_3": "Kayıt butonuyla tüm kameraları aynı anda kaydedebilirsiniz. Kaydı durdurduğunuzda hasta adı girmeniz istenecek ve her kamera için ayrı video oluşturulacak.",
   "tutorial_title_4": "Ayarlar",
-  "tutorial_desc_4": "⚙ butonundan dil, otomatik başlatma ve kayıtların kaydedileceği klasörü seçebilirsiniz. Bu turu istediğiniz zaman ? butonuyla tekrar açabilirsiniz.",
+  "tutorial_desc_4": "⚙ butonunu kullanarak uygulama ayarlarını yapılandırabilirsiniz. Buradan arayüz **Dilini** değiştirebilir, başlangıçta **Otomatik Başlatmayı** aktif edebilir, **Kayıt Klasörünü** seçebilir, **Donanım Hızlandırmayı** kapatabilir ve **Kayıt Modunu** (Anlık veya Ayrı) ayarlayabilirsiniz. Bu turu istediğiniz zaman ? butonuyla tekrar açabilirsiniz.",
   "msg_already_running": "Uygulama zaten çalışıyor.",
   "btn_yes": "Evet",
   "btn_no": "Hayır",

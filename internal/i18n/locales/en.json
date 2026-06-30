@@ -110,7 +110,7 @@
   "tutorial_title_3": "Recording",
   "tutorial_desc_3": "Use the Record button to record all cameras at once. When you stop recording, you will be asked for a patient name and a separate video will be created for each camera.",
   "tutorial_title_4": "Settings",
-  "tutorial_desc_4": "Use the ⚙ button to configure language, auto-start, and recordings folder. You can reopen this tour at any time with the ? button.",
+  "tutorial_desc_4": "Use the ⚙ button to configure application settings. Here you can change the **Language**, enable **Auto-Start on Boot**, choose the **Recordings Folder**, toggle **Hardware Acceleration**, and configure the **Recording Mode** (Instant or Separate). You can reopen this tour at any time with the ? button.",
   "msg_already_running": "Application is already running.",
   "btn_yes": "Yes",
   "btn_no": "No",

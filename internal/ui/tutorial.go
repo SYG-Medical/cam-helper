@@ -72,7 +72,7 @@ type tutorialDialog struct {
 	// content widgets
 	stepLabel *widget.Label
 	title     *widget.Label
-	desc      *widget.Label
+	desc      *widget.RichText
 	prevBtn   *widget.Button
 	nextBtn   *widget.Button
 	skipBtn   *widget.Button
@@ -89,7 +89,7 @@ func newTutorialDialog(win fyne.Window, steps []TutorialStep, onFinish func(), o
 	td.stepLabel = widget.NewLabelWithStyle("", fyne.TextAlignCenter, fyne.TextStyle{Italic: true})
 	td.title = widget.NewLabelWithStyle("", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
 	td.title.Wrapping = fyne.TextWrapWord
-	td.desc = widget.NewLabel("")
+	td.desc = widget.NewRichText()
 	td.desc.Wrapping = fyne.TextWrapWord
 
 	td.prevBtn = widget.NewButtonWithIcon(i18n.T("tutorial_prev"), theme.NavigateBackIcon(), func() {
@@ -140,7 +140,7 @@ func (td *tutorialDialog) refresh() {
 
 	td.stepLabel.SetText(fmt.Sprintf(i18n.T("tutorial_step"), td.current+1, total))
 	td.title.SetText(i18n.T(step.TitleKey))
-	td.desc.SetText(i18n.T(step.DescKey))
+	td.desc.ParseMarkdown(i18n.T(step.DescKey))
 
 	// Update prev button
 	td.prevBtn.SetText(i18n.T("tutorial_prev"))
