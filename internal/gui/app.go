@@ -79,6 +79,7 @@ type App struct {
 	// Recording state
 	isRecording   bool
 	recordSession *stream.RecordingSession
+	patientCache  *stream.PatientCache
 
 	// Composite recording
 	compositeRecorder *stream.CompositeRecorder
@@ -128,6 +129,7 @@ func New() (*App, error) {
 		fyneApp:       a,
 		window:        w,
 		shownUSBError: make(map[string]bool),
+		patientCache:  stream.NewPatientCache(10 * time.Minute),
 	}
 
 	// Create and show splash screen immediately
@@ -1273,8 +1275,8 @@ func (a *App) startRecording() {
 	a.showPatientNameDialogForRecording(recordings, cols, rows)
 }
 
-func (a *App) proceedWithRecording(cameras []stream.CameraRecording, cols, rows int, patientDir string) {
-	session, err := stream.NewRecordingSession(patientDir, cameras, cols, rows)
+func (a *App) proceedWithRecording(cameras []stream.CameraRecording, cols, rows int, patientDir string, recordTag string) {
+	session, err := stream.NewRecordingSession(patientDir, cameras, cols, rows, recordTag)
 	if err != nil {
 		dialog.ShowError(err, a.window)
 		return
@@ -1291,7 +1293,7 @@ func (a *App) proceedWithRecording(cameras []stream.CameraRecording, cols, rows 
 			// the composite recorder which reads from existing preview frames.
 			session.UpdateStartTime(time.Now())
 			ffmpegPath, _ := stream.ResolveFFmpegPath(a.cfg.FFmpegPath)
-			outFile := filepath.Join(patientDir, fmt.Sprintf("Genel_%s.mp4", time.Now().Format("20060102_150405")))
+			outFile := filepath.Join(patientDir, fmt.Sprintf("Genel_%s%s.mp4", time.Now().Format("20060102_150405"), recordTag))
 			
 			cameraOrder := make([]string, len(cameras))
 			for i, c := range cameras {
@@ -1871,6 +1873,14 @@ func (a *App) showPatientNameDialogForRecording(cameras []stream.CameraRecording
 	historyEntry.SetPlaceHolder("Hasta Hikayesi (Opsiyonel)")
 	historyEntry.SetMinRowsVisible(3)
 
+	// Pre-fill fields from cache if valid
+	cachedName, cachedTc, cachedHistory, cachedDir, _, cacheValid := a.patientCache.Get()
+	if cacheValid {
+		nameEntry.Text = cachedName
+		tcEntry.Text = cachedTc
+		historyEntry.Text = cachedHistory
+	}
+
 	dlg := dialog.NewForm(
 		i18n.T("record_patient_title"),
 		i18n.T("record_patient_btn"),
@@ -1885,18 +1895,26 @@ func (a *App) showPatientNameDialogForRecording(cameras []stream.CameraRecording
 				return
 			}
 			patientName := strings.TrimSpace(nameEntry.Text)
-			if patientName == "" {
-				patientName = "Kayit"
-			}
-			
 			tc := strings.TrimSpace(tcEntry.Text)
 			history := strings.TrimSpace(historyEntry.Text)
-			
-			outDir := stream.GetOutputDir(a.cfg.RecordingsDir, patientName)
 
-			if err := os.MkdirAll(outDir, 0o755); err != nil {
-				dialog.ShowError(fmt.Errorf("failed to create output directory: %w", err), a.window)
-				return
+			var outDir string
+			var recordTag string
+
+			// If cache is valid and user did not change any info, reuse the directory and increment record count
+			if cacheValid && patientName == cachedName && tc == cachedTc && history == cachedHistory {
+				outDir = cachedDir
+				count := a.patientCache.IncrementRecordCount()
+				recordTag = fmt.Sprintf("_REC%02d", count)
+			} else {
+				// Otherwise, it's a new patient or user changed the info, create a new directory
+				outDir = stream.GetOutputDir(a.cfg.RecordingsDir, patientName)
+				if err := os.MkdirAll(outDir, 0o755); err != nil {
+					dialog.ShowError(fmt.Errorf("failed to create output directory: %w", err), a.window)
+					return
+				}
+				a.patientCache.Store(patientName, tc, history, outDir)
+				recordTag = "_REC01"
 			}
 			
 			// Create PatientInfo
@@ -1910,7 +1928,7 @@ func (a *App) showPatientNameDialogForRecording(cameras []stream.CameraRecording
 				a.logger.Printf("Failed to save patient info: %v", err)
 			}
 			
-			a.proceedWithRecording(cameras, cols, rows, outDir)
+			a.proceedWithRecording(cameras, cols, rows, outDir, recordTag)
 		},
 		a.window,
 	)

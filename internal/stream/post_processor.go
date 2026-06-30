@@ -65,6 +65,9 @@ func (p *PostProcessor) ProcessGeneralOnly(
 	}
 
 	timestamp := time.Now().Format("20060102_150405")
+	if snapshot.RecordTag != "" {
+		timestamp = timestamp + snapshot.RecordTag
+	}
 
 	tracker := &progressTracker{
 		totalJobs:   1,
@@ -102,6 +105,9 @@ func (p *PostProcessor) ProcessIndividualCameras(
 	}
 
 	timestamp := time.Now().Format("20060102_150405")
+	if snapshot.RecordTag != "" {
+		timestamp = timestamp + snapshot.RecordTag
+	}
 	var files []string
 	var mu sync.Mutex
 	var firstErr error
@@ -216,6 +222,9 @@ func (p *PostProcessor) Process(
 	}
 
 	timestamp := time.Now().Format("20060102_150405")
+	if snapshot.RecordTag != "" {
+		timestamp = timestamp + snapshot.RecordTag
+	}
 	alignedOutputs := make(map[string]string, len(cameras))
 	var files []string
 	var mu sync.Mutex
@@ -618,12 +627,25 @@ func ffDuration(duration time.Duration) string {
 }
 
 func GetOutputDir(recordingsDir, patientName string) string {
-	timestamp := time.Now().Format("20060102_150405")
 	folderName := sanitizeFilename(patientName)
 	if folderName == "" {
-		folderName = "Kayit"
+		// Isimsiz folder always contains time to prevent collisions
+		folderName = "isimsiz"
+		timestamp := time.Now().Format("20060102_150405")
+		return filepath.Join(recordingsDir, folderName+"_"+timestamp)
 	}
-	return filepath.Join(recordingsDir, folderName+"_"+timestamp)
+
+	dateStr := time.Now().Format("20060102")
+	basePath := filepath.Join(recordingsDir, folderName+"_"+dateStr)
+
+	// Check if this date folder already exists.
+	// If it does (e.g. from an older session or cache expired session),
+	// suffix it with time to avoid collision.
+	if _, err := os.Stat(basePath); err == nil {
+		timeStr := time.Now().Format("150405")
+		return basePath + "_" + timeStr
+	}
+	return basePath
 }
 
 func sanitizeFilename(name string) string {
@@ -820,6 +842,13 @@ func (p *PostProcessor) DecomposeComposite(
 	}
 
 	timestamp := time.Now().Format("20060102_150405")
+	baseName := filepath.Base(compositeFile)
+	ext := filepath.Ext(baseName)
+	baseNoExt := strings.TrimSuffix(baseName, ext) // e.g. Genel_20260630_165000_REC01
+	if strings.HasPrefix(baseNoExt, "Genel_") {
+		timestamp = strings.TrimPrefix(baseNoExt, "Genel_") // e.g. 20260630_165000_REC01
+	}
+
 	sortCameraRecordings(cameras)
 
 	tracker := &progressTracker{

@@ -37,6 +37,7 @@ type RecordingSession struct {
 	EndedAt   time.Time
 	Cols      int
 	Rows      int
+	RecordTag string
 
 	mu      sync.Mutex
 	Cameras map[string]*CameraRecording
@@ -51,11 +52,12 @@ type RecordingSessionSnapshot struct {
 	Cols      int                          `json:"cols"`
 	Rows      int                          `json:"rows"`
 	Cameras   map[string]*CameraRecording  `json:"cameras"`
+	RecordTag string                       `json:"record_tag,omitempty"`
 }
 
 // NewRecordingSession creates a session that stores raw segments under
 // patientDir/raw/. When patientDir is empty the legacy Temp path is used.
-func NewRecordingSession(patientDir string, cameras []CameraRecording, cols, rows int) (*RecordingSession, error) {
+func NewRecordingSession(patientDir string, cameras []CameraRecording, cols, rows int, recordTag string) (*RecordingSession, error) {
 	now := time.Now()
 	id := now.Format("20060102_150405.000")
 	var tempDir string
@@ -74,6 +76,7 @@ func NewRecordingSession(patientDir string, cameras []CameraRecording, cols, row
 		StartedAt: now,
 		Cols:      cols,
 		Rows:      rows,
+		RecordTag: recordTag,
 		Cameras:   make(map[string]*CameraRecording, len(cameras)),
 	}
 	for i := range cameras {
@@ -142,6 +145,7 @@ func (s *RecordingSession) Snapshot() RecordingSessionSnapshot {
 		Cols:      s.Cols,
 		Rows:      s.Rows,
 		Cameras:   make(map[string]*CameraRecording, len(s.Cameras)),
+		RecordTag: s.RecordTag,
 	}
 	for id, camera := range s.Cameras {
 		copyCamera := *camera
