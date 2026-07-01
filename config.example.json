@@ -1,35 +1,44 @@
 {
   "auto_start": false,
+  "setup_completed": false,
+  "tutorial_shown": false,
+  "language": "",
+  "recordings_dir": "",
+  "ffmpeg_path": "",
+  "log_level": "info",
+  "disable_hw_accel": false,
+  "composite_recording": true,
   "target_virtual_camera": "SYG Camera",
   "linux_video_device": "/dev/video10",
   "driver_mode": "bridge",
   "bridge_port": 18080,
   "driver_installer": "third_party/driver/virtual-camera-installer.dll",
   "driver_bridge": "third_party/driver/virtual-camera-bridge.exe",
-  "ffmpeg_path": "ffmpeg",
-  "log_level": "info",
   "cameras": [
     {
       "id": "cam-1",
-      "name": "Kamera 1",
+      "name": "Ortam 1",
       "type": "rtsp",
       "rtsp_url": "rtsp://192.168.1.100:554/live",
       "device": "",
       "width": 1280,
       "height": 720,
       "fps": 30,
-      "enabled": true
+      "enabled": true,
+      "camera_role": "environment"
     },
     {
       "id": "cam-2",
-      "name": "Kamera 2",
+      "name": "Sağ Göz Kamerası",
       "type": "webcam",
       "rtsp_url": "",
       "device": "/dev/video0",
       "width": 1280,
       "height": 720,
       "fps": 30,
-      "enabled": true
+      "enabled": true,
+      "camera_role": "glasses",
+      "eye_side": "right"
     }
   ],
   "saved_layouts": [],
