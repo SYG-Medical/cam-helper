@@ -638,13 +638,8 @@ func GetOutputDir(recordingsDir, patientName string) string {
 	dateStr := time.Now().Format("20060102")
 	basePath := filepath.Join(recordingsDir, folderName+"_"+dateStr)
 
-	// Check if this date folder already exists.
-	// If it does (e.g. from an older session or cache expired session),
-	// suffix it with time to avoid collision.
-	if _, err := os.Stat(basePath); err == nil {
-		timeStr := time.Now().Format("150405")
-		return basePath + "_" + timeStr
-	}
+	// If the user typed the exact same Patient Name and a folder for today already exists,
+	// reuse that folder and increment the maneuver count.
 	return basePath
 }
 

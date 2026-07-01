@@ -113,6 +113,8 @@ type App struct {
 	recordingsDrawerVisible bool
 	recordingsBtn           *widget.Button
 
+	patientInfoDrawerPanel *fyne.Container
+
 	overlayContainer *fyne.Container
 
 	settingsDialog         dialog.Dialog
@@ -1269,7 +1271,7 @@ func (a *App) startRecording() {
 		a.logger.Printf("[recording] check disk space failed: %v", err)
 		dialog.ShowError(fmt.Errorf(i18n.T("disk_check_error"), err), a.window)
 		// Proceed anyway so a system error doesn't completely block recording
-		a.showPatientNameDialogForRecording(recordings, cols, rows)
+		a.startTemporaryRecording(recordings, cols, rows)
 		return
 	}
 
@@ -1288,14 +1290,25 @@ func (a *App) startRecording() {
 		return
 	} else if availableMins < 15.0 {
 		a.showDiskSpaceWarning(availableMins, func() {
-			a.showPatientNameDialogForRecording(recordings, cols, rows)
+			a.startTemporaryRecording(recordings, cols, rows)
 		}, func() {
 			a.changeRecordingsDirAndRetry()
 		})
 		return
 	}
 
-	a.showPatientNameDialogForRecording(recordings, cols, rows)
+	a.startTemporaryRecording(recordings, cols, rows)
+}
+
+func (a *App) startTemporaryRecording(cameras []stream.CameraRecording, cols, rows int) {
+	timestamp := time.Now().Format("20060102_150405")
+	tempPatientDir := filepath.Join(a.cfg.RecordingsDir, "Record_"+timestamp)
+	if err := os.MkdirAll(tempPatientDir, 0o755); err != nil {
+		dialog.ShowError(fmt.Errorf("failed to create temp recording directory: %w", err), a.window)
+		return
+	}
+	// Start with REC01; it will be adjusted if we append to an existing patient later
+	a.proceedWithRecording(cameras, cols, rows, tempPatientDir, "_REC01")
 }
 
 func (a *App) proceedWithRecording(cameras []stream.CameraRecording, cols, rows int, patientDir string, recordTag string) {
@@ -1667,10 +1680,14 @@ func (a *App) stopRecording() {
 	if session == nil {
 		return
 	}
+	
+	// Open the drawer to get patient info. The drawer's "Save" button will trigger postProcessRecording.
+	a.showPatientInfoDrawerAfterRecording(session, compositeRec)
+}
 
+func (a *App) postProcessRecording(session *stream.RecordingSession, compositeRec *stream.CompositeRecorder, tempDir, actualPatientDir string, note string) {
 	// ---------------------------------------------------------------
-	// COMPOSITE MODE: CompositeRecorder writes the video in real-time.
-	// Stop it (flushes FFmpeg), video is immediately available.
+	// COMPOSITE MODE
 	// ---------------------------------------------------------------
 	if compositeRec != nil {
 		content := container.NewVBox(widget.NewLabel(i18n.T("msg_please_wait")), widget.NewProgressBarInfinite())
@@ -1683,8 +1700,17 @@ func (a *App) stopRecording() {
 			// 2. Finalize session timestamps.
 			a.multiManager.StopRecording(session)
 
-			actualPatientDir := filepath.Dir(session.TempDir)
 			compositeFile := compositeRec.OutFile()
+			// Move temporary recorded files to final directory if needed
+			if tempDir != "" && tempDir != actualPatientDir {
+				stream.MoveTempToFinal(tempDir, actualPatientDir)
+			}
+			
+			// compositeFile is originally inside tempDir, but stream.MoveTempToFinal moves everything 
+			// into actualPatientDir with the same filenames. 
+			// So the finalFile will just be the basename in actualPatientDir.
+			finalFile := filepath.Join(actualPatientDir, filepath.Base(compositeFile))
+			compositeFile = finalFile
 
 			fyne.Do(func() {
 				progress.Hide()
@@ -1694,25 +1720,21 @@ func (a *App) stopRecording() {
 					return
 				}
 
-				// Save composite file reference to patient info.
 				info, infoErr := stream.LoadPatientInfo(actualPatientDir)
 				if infoErr == nil {
 					info.Videos = append(info.Videos, stream.VideoFile{
 						FileName: filepath.Base(compositeFile),
 						Type:     "general",
+						Note:     note,
 					})
 					_ = stream.SavePatientInfo(actualPatientDir, info)
 				}
 
-				// Enqueue background decompose job.
 				if a.jobQueue != nil {
 					_ = a.jobQueue.EnqueueComposite(session, actualPatientDir, compositeFile)
 				}
 
-				// Send OS notification instead of blocking dialog
 				a.sendOSNotification(i18n.T("record_done_title"), i18n.T("record_saved_notification"))
-
-				// Show in Kayıtlarım drawer with highlight
 				a.showRecordingsDrawerWithHighlight(actualPatientDir)
 			})
 		}()
@@ -1720,7 +1742,7 @@ func (a *App) stopRecording() {
 	}
 
 	// ---------------------------------------------------------------
-	// STANDARD MODE: per-camera MJPEG segments → post-process
+	// STANDARD MODE
 	// ---------------------------------------------------------------
 	content := container.NewVBox(widget.NewLabel(i18n.T("msg_please_wait")), widget.NewProgressBarInfinite())
 	progress := a.NewToastProgress(i18n.T("msg_please_wait"), content)
@@ -1729,10 +1751,13 @@ func (a *App) stopRecording() {
 	go func() {
 		a.multiManager.StopRecording(session)
 		
+		if tempDir != "" && tempDir != actualPatientDir {
+			stream.MoveTempToFinal(tempDir, actualPatientDir)
+		}
+		
 		fyne.Do(func() {
 			progress.Hide()
 			
-			// Start fast single-pass grid processing as a toast popup
 			progressBar := widget.NewProgressBar()
 			progressLabel := widget.NewLabel(i18n.T("record_processing"))
 			progressContent := container.NewVBox(progressLabel, progressBar)
@@ -1742,11 +1767,6 @@ func (a *App) stopRecording() {
 			go func() {
 				ctx := context.Background()
 				progressCh := make(chan float64, 10)
-				patientDir := session.Snapshot().TempDir
-				// TempDir is set to patientDir/raw in manager.go/recording_session.go.
-				// Let me get the actual patientDir.
-				_ = patientDir
-				actualPatientDir := filepath.Dir(session.TempDir)
 
 				var result stream.ProcessResult
 				done := make(chan struct{})
@@ -1758,7 +1778,6 @@ func (a *App) stopRecording() {
 					close(done)
 				}()
 
-				// Read from progress channel and update UI
 				go func() {
 					for val := range progressCh {
 						v := val
@@ -1770,18 +1789,17 @@ func (a *App) stopRecording() {
 
 				<-done
 				
-				// Enqueue remaining files to JobQueue
 				if result.Err == nil && a.jobQueue != nil {
 					_ = a.jobQueue.Enqueue(session, actualPatientDir)
 				}
 				
-				// Update patient info with the general video
 				if result.Err == nil && len(result.Files) > 0 {
 					info, err := stream.LoadPatientInfo(actualPatientDir)
 					if err == nil {
 						info.Videos = append(info.Videos, stream.VideoFile{
 							FileName: filepath.Base(result.Files[0]),
 							Type:     "general",
+							Note:     note,
 						})
 						_ = stream.SavePatientInfo(actualPatientDir, info)
 					}
@@ -1796,10 +1814,7 @@ func (a *App) stopRecording() {
 						return
 					}
 
-					// Send OS notification instead of blocking dialog
 					a.sendOSNotification(i18n.T("record_done_title"), i18n.T("record_saved_notification"))
-
-					// Show in Kayıtlarım drawer with highlight
 					a.showRecordingsDrawerWithHighlight(actualPatientDir)
 				})
 			}()
@@ -1851,80 +1866,6 @@ func (a *App) hidePerfBanner() {
 	}
 }
 
-func (a *App) showPatientNameDialogForRecording(cameras []stream.CameraRecording, cols, rows int) {
-	nameEntry := widget.NewEntry()
-	nameEntry.SetPlaceHolder(i18n.T("record_patient_placeholder"))
-	
-	patientIDEntry := widget.NewEntry()
-	patientIDEntry.SetPlaceHolder(i18n.T("record_patient_id_placeholder"))
-	
-	historyEntry := widget.NewMultiLineEntry()
-	historyEntry.SetPlaceHolder(i18n.T("record_patient_history_placeholder"))
-	historyEntry.SetMinRowsVisible(3)
-
-	// Pre-fill fields from cache if valid
-	cachedName, cachedPatientID, cachedHistory, cachedDir, _, cacheValid := a.patientCache.Get()
-	if cacheValid {
-		nameEntry.Text = cachedName
-		patientIDEntry.Text = cachedPatientID
-		historyEntry.Text = cachedHistory
-	}
-
-	dlg := dialog.NewForm(
-		i18n.T("record_patient_title"),
-		i18n.T("record_patient_btn"),
-		i18n.T("btn_cancel"),
-		[]*widget.FormItem{
-			widget.NewFormItem(i18n.T("record_patient_label"), nameEntry),
-			widget.NewFormItem(i18n.T("record_patient_id_label"), patientIDEntry),
-			widget.NewFormItem(i18n.T("record_patient_history_label"), historyEntry),
-		},
-		func(ok bool) {
-			if !ok {
-				return
-			}
-			patientName := strings.TrimSpace(nameEntry.Text)
-			patientID := strings.TrimSpace(patientIDEntry.Text)
-			history := strings.TrimSpace(historyEntry.Text)
-
-			var outDir string
-			var recordTag string
-
-			// If cache is valid and user did not change any info, reuse the directory and increment record count
-			if cacheValid && patientName == cachedName && patientID == cachedPatientID && history == cachedHistory {
-				outDir = cachedDir
-				count := a.patientCache.IncrementRecordCount()
-				recordTag = fmt.Sprintf("_REC%02d", count)
-			} else {
-				// Otherwise, it's a new patient or user changed the info, create a new directory
-				outDir = stream.GetOutputDir(a.cfg.RecordingsDir, patientName)
-				if err := os.MkdirAll(outDir, 0o755); err != nil {
-					dialog.ShowError(fmt.Errorf("failed to create output directory: %w", err), a.window)
-					return
-				}
-				a.patientCache.Store(patientName, patientID, history, outDir)
-				recordTag = "_REC01"
-			}
-			
-			// Create PatientInfo
-			info := stream.PatientInfo{
-				Name:           patientName,
-				PatientID:      patientID,
-				TC:             patientID, // For backwards compatibility
-				PatientHistory: history,
-				RecordDate:     time.Now(),
-			}
-			if err := stream.SavePatientInfo(outDir, info); err != nil {
-				a.logger.Printf("Failed to save patient info: %v", err)
-			}
-			
-			a.proceedWithRecording(cameras, cols, rows, outDir, recordTag)
-		},
-		a.window,
-	)
-	dlg.Resize(fyne.NewSize(400, 300))
-	dlg.Show()
-}
 
 // --- Settings Dialog ---
 func (a *App) showSettingsDialog() {
@@ -2447,7 +2388,25 @@ func (a *App) refreshRecordingsList() {
 			})
 			openBtn.Importance = widget.LowImportance
 
-			itemContent := container.NewBorder(nil, nil, nil, openBtn, container.NewPadded(textCol))
+			infoBtn := widget.NewButtonWithIcon("", theme.InfoIcon(), func() {
+				// We load info here again to ensure we get the latest if edited
+				info, err := stream.LoadPatientInfo(recDir)
+				if err == nil {
+					a.showPatientInfoDialog(info)
+				}
+			})
+			infoBtn.Importance = widget.LowImportance
+			
+			editBtn := widget.NewButtonWithIcon("", theme.DocumentCreateIcon(), func() {
+				info, err := stream.LoadPatientInfo(recDir)
+				if err == nil {
+					a.showEditPatientDialog(recDir, info)
+				}
+			})
+			editBtn.Importance = widget.LowImportance
+
+			actions := container.NewHBox(infoBtn, editBtn, openBtn)
+			itemContent := container.NewBorder(nil, nil, nil, actions, container.NewPadded(textCol))
 
 			itemBg := canvas.NewRectangle(colorInputSurface)
 			itemBg.CornerRadius = 6
@@ -2951,6 +2910,7 @@ func (a *App) Run() error {
 		a.jobQueue = jq
 		a.cameraPanels = make(map[string]*ui.CameraPanel)
 		a.cameraOrder = getCameraOrder(cfg.Cameras)
+		a.patientCache.SetFilePath(filepath.Join(filepath.Dir(cfgPath), "patient_cache.json"))
 		a.mu.Unlock()
 
 		if jq != nil {

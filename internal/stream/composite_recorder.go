@@ -130,7 +130,7 @@ func (cr *CompositeRecorder) Start() error {
 		"-crf", "23",
 		"-pix_fmt", "yuv420p",
 		"-movflags", "+faststart",
-		"-vsync", "2",
+		"-fps_mode", "vfr",
 		"-an",
 		"-y", partial,
 	}
