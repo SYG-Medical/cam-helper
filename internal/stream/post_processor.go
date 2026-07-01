@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"nystavision/internal/i18n"
 	"nystavision/internal/logging"
 )
 
@@ -45,6 +46,48 @@ type ProcessResult struct {
 	Err       error
 }
 
+// GeneralVideoPrefix returns the i18n-based prefix for the general/composite video.
+// The prefix is fixed at call time (i.e., at recording time), so the filename
+// language matches the language the operator was using during the session.
+func GeneralVideoPrefix() string {
+	if p := i18n.T("file_prefix_general"); p != "file_prefix_general" {
+		return p
+	}
+	return "Genel"
+}
+
+// GeneralPreviewPrefix returns the i18n-based prefix for the preview video.
+func GeneralPreviewPrefix() string {
+	if p := i18n.T("file_prefix_preview"); p != "file_prefix_preview" {
+		return p
+	}
+	return "Genel_Onizleme"
+}
+
+// cameraFilePrefix returns a human-readable file name prefix for a camera,
+// derived from its role/eye-side when available, falling back to the camera name.
+func cameraFilePrefix(camera CameraRecording) string {
+	switch camera.CameraRole {
+	case "glasses":
+		switch camera.EyeSide {
+		case "right":
+			if p := i18n.T("cam_name_auto_right"); p != "cam_name_auto_right" {
+				return p
+			}
+		case "left":
+			if p := i18n.T("cam_name_auto_left"); p != "cam_name_auto_left" {
+				return p
+			}
+		case "both":
+			if p := i18n.T("cam_name_auto_both"); p != "cam_name_auto_both" {
+				return p
+			}
+		}
+	}
+	// Fallback: use the camera name directly
+	return camera.Name
+}
+
 // ProcessGeneralOnly creates the general grid video directly from raw recording
 // segments in a single FFmpeg pass — no intermediate aligned files. This is the
 // fast path called immediately after recording stops so the doctor can view the
@@ -75,9 +118,11 @@ func (p *PostProcessor) ProcessGeneralOnly(
 		progressOut: progress,
 	}
 
-	fileName := fmt.Sprintf("Genel_%s.mp4", timestamp)
+	var fileName string
 	if isPreview {
-		fileName = fmt.Sprintf("Genel_Onizleme_%s.mp4", timestamp)
+		fileName = fmt.Sprintf("%s_%s.mp4", GeneralPreviewPrefix(), timestamp)
+	} else {
+		fileName = fmt.Sprintf("%s_%s.mp4", GeneralVideoPrefix(), timestamp)
 	}
 	generalFile := filepath.Join(outDir, fileName)
 	if err := p.renderGeneralFromSegments(ctx, snapshot, cameras, generalFile, isPreview, func(f float64) { tracker.updateJob(generalFile, f) }); err != nil {
@@ -131,11 +176,11 @@ func (p *PostProcessor) ProcessIndividualCameras(
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			safeName := sanitizeFilename(camera.Name)
+			safeName := sanitizeFilename(cameraFilePrefix(camera))
 			if safeName == "" {
 				safeName = sanitizeFilename(camera.ID)
 			}
-			// Append camera.ID to ensure the file name is strictly unique, even if the user names multiple cameras the same.
+			// Append camera.ID to ensure the file name is strictly unique.
 			outFile := filepath.Join(outDir, fmt.Sprintf("%s_%s_%s.mp4", safeName, camera.ID, timestamp))
 
 			if err := p.renderCamera(ctx, snapshot, camera, outFile, func(f float64) { tracker.updateJob(outFile, f) }); err != nil {
@@ -251,7 +296,7 @@ func (p *PostProcessor) Process(
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			safeName := sanitizeFilename(camera.Name)
+			safeName := sanitizeFilename(cameraFilePrefix(camera))
 			if safeName == "" {
 				safeName = sanitizeFilename(camera.ID)
 			}
@@ -294,7 +339,7 @@ func (p *PostProcessor) Process(
 		return ProcessResult{OutputDir: outDir, Files: files, Err: firstErr}
 	}
 
-	generalFile := filepath.Join(outDir, fmt.Sprintf("Genel_%s.mp4", timestamp))
+	generalFile := filepath.Join(outDir, fmt.Sprintf("%s_%s.mp4", GeneralVideoPrefix(), timestamp))
 	if err := p.renderGeneral(ctx, snapshot, cameras, alignedOutputs, generalFile, func(f float64) { tracker.updateJob(generalFile, f) }); err != nil {
 		return ProcessResult{OutputDir: outDir, Files: files, Err: fmt.Errorf("create general video: %w", err)}
 	}

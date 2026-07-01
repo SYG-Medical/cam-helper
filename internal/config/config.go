@@ -21,6 +21,16 @@ const (
 	MaxCameras = 4
 )
 
+// Camera role constants.
+const (
+	CameraRoleEnvironment = "environment" // Ortam / Environment
+	CameraRoleGlasses     = "glasses"     // Gözlük / Glasses
+
+	EyeSideRight = "right"
+	EyeSideLeft  = "left"
+	EyeSideBoth  = "both"
+)
+
 // CameraSource describes a single camera input (RTSP stream or local webcam).
 type CameraSource struct {
 	ID      string `json:"id"`
@@ -34,6 +44,10 @@ type CameraSource struct {
 	PixelFormat string `json:"pixel_format,omitempty"`
 	DevicePath  string `json:"device_path,omitempty"`
 	Enabled     bool   `json:"enabled"`
+
+	// Camera role for medical recording
+	CameraRole string `json:"camera_role,omitempty"` // "environment" or "glasses"
+	EyeSide    string `json:"eye_side,omitempty"`    // "right", "left", or "both" (only for glasses)
 }
 
 // SavedLayout stores a named layout with full camera+source information.
@@ -288,6 +302,28 @@ func NextCameraID(cameras []CameraSource) string {
 	return fmt.Sprintf("cam-%d", maxNum+1)
 }
 
+// defaultCameraRole returns the backward-compatible role for a camera at a given
+// 0-based slot index. This is applied only when a camera has no CameraRole set,
+// ensuring that existing configs (which have no role field) are silently upgraded.
+//
+// Mapping (same for old 2-camera defaults):
+//   slot 0 → environment  (Ortam 1)
+//   slot 1 → glasses/right (Sağ Göz Kamerası)
+//   slot 2 → glasses/left  (Sol Göz Kamerası)
+//   slot 3 → environment-2 (Ortam 2)
+func defaultCameraRole(slotIdx int) (role, eyeSide string) {
+	switch slotIdx {
+	case 0:
+		return CameraRoleEnvironment, ""
+	case 1:
+		return CameraRoleGlasses, EyeSideRight
+	case 2:
+		return CameraRoleGlasses, EyeSideLeft
+	default:
+		return CameraRoleEnvironment, ""
+	}
+}
+
 func (c *Config) Normalize() {
 	// Ensure minimum 2 cameras
 	for len(c.Cameras) < MinCameras {
@@ -328,6 +364,15 @@ func (c *Config) Normalize() {
 		}
 		if cam.FPS <= 0 {
 			cam.FPS = 30
+		}
+		// Backward-compat migration: assign a default role if none is set.
+		// This silently upgrades configs that predate the camera-role feature.
+		if cam.CameraRole == "" {
+			cam.CameraRole, cam.EyeSide = defaultCameraRole(i)
+		}
+		// Glasses role must have an EyeSide; default to "right"
+		if cam.CameraRole == CameraRoleGlasses && cam.EyeSide == "" {
+			cam.EyeSide = EyeSideRight
 		}
 	}
 

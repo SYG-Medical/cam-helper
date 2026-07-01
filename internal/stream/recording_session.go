@@ -26,6 +26,11 @@ type CameraRecording struct {
 	Order      int                `json:"order"`
 	WasRunning bool               `json:"was_running"`
 	Segments   []RecordingSegment `json:"segments"`
+
+	// Camera role metadata — passed through from config so post-processing
+	// can use them for file naming and VideoFile metadata.
+	CameraRole string `json:"camera_role,omitempty"` // "environment" or "glasses"
+	EyeSide    string `json:"eye_side,omitempty"`    // "right", "left", or "both"
 }
 
 // RecordingSession contains all temporary camera recordings for one user session.

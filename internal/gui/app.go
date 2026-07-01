@@ -110,6 +110,8 @@ type App struct {
 	// Recordings drawer elements (Kayıtlarım - right side)
 	recordingsDrawerPanel   *fyne.Container
 	recordingsListContainer *fyne.Container
+	recordingsList          *widget.List
+	recordingsData          []recordingEntry
 	recordingsDrawerVisible bool
 	recordingsBtn           *widget.Button
 
@@ -707,8 +709,49 @@ func (a *App) showEditCameraDialog(cameraID string) {
 		fyne.Do(func() {
 			progress.Hide()
 
-			nameEntry := widget.NewEntry()
-			nameEntry.Text = selectedCam.Name
+			// ── Camera Role ──────────────────────────────────────────────
+			roleOptions := []string{
+				i18n.T("cam_role_environment"),
+				i18n.T("cam_role_glasses"),
+			}
+			roleSelect := widget.NewSelect(roleOptions, nil)
+			if selectedCam.CameraRole == config.CameraRoleGlasses {
+				roleSelect.SetSelected(i18n.T("cam_role_glasses"))
+			} else {
+				roleSelect.SetSelected(i18n.T("cam_role_environment"))
+			}
+
+			// ── Eye Side (glasses only) ───────────────────────────────────
+			eyeOptions := []string{
+				i18n.T("cam_eye_right"),
+				i18n.T("cam_eye_left"),
+				i18n.T("cam_eye_both"),
+			}
+			eyeSelect := widget.NewSelect(eyeOptions, nil)
+			switch selectedCam.EyeSide {
+			case config.EyeSideLeft:
+				eyeSelect.SetSelected(i18n.T("cam_eye_left"))
+			case config.EyeSideBoth:
+				eyeSelect.SetSelected(i18n.T("cam_eye_both"))
+			default:
+				eyeSelect.SetSelected(i18n.T("cam_eye_right"))
+			}
+			eyeFormItem := widget.NewFormItem(i18n.T("lbl_eye_side"), eyeSelect)
+
+			// Show/hide eye side selector based on role
+			if roleSelect.Selected == i18n.T("cam_role_glasses") {
+				eyeFormItem.Widget.Show()
+			} else {
+				eyeFormItem.Widget.Hide()
+			}
+
+			roleSelect.OnChanged = func(s string) {
+				if s == i18n.T("cam_role_glasses") {
+					eyeFormItem.Widget.Show()
+				} else {
+					eyeFormItem.Widget.Hide()
+				}
+			}
 
 			typeSelect := widget.NewSelect([]string{"rtsp", "webcam"}, nil)
 			typeSelect.SetSelected(selectedCam.Type)
@@ -853,7 +896,8 @@ func (a *App) showEditCameraDialog(cameraID string) {
 			}
 
 			formItems := []*widget.FormItem{
-				widget.NewFormItem(i18n.T("lbl_camera_name"), nameEntry),
+				widget.NewFormItem(i18n.T("lbl_camera_role"), roleSelect),
+				eyeFormItem,
 				widget.NewFormItem(i18n.T("lbl_type"), typeSelect),
 				widget.NewFormItem(i18n.T("lbl_ip_url"), urlEntry),
 				widget.NewFormItem(i18n.T("lbl_webcam"), webcamSelect),
@@ -878,43 +922,62 @@ func (a *App) showEditCameraDialog(cameraID string) {
 					a.mu.Lock()
 					defer a.mu.Unlock()
 
-				camPtr := &a.cfg.Cameras[selectedIdx]
-				camPtr.Name = nameEntry.Text
-				camPtr.Type = typeSelect.Selected
-				camPtr.RTSPURL = strings.TrimSpace(urlEntry.Text)
-				if camPtr.Type == "webcam" {
-					camPtr.Device = wcDevMap[webcamSelect.Selected]
-					if formatSelect.Selected != i18n.T("lbl_format_auto") && formatSelect.Selected != i18n.T("lbl_format_loading") {
-						if cap, ok := capMap[formatSelect.Selected]; ok {
-							camPtr.Width = cap.Width
-							camPtr.Height = cap.Height
-							camPtr.FPS = int(cap.FPS)
-							if cap.VCodec == "mjpeg" {
-								camPtr.PixelFormat = "mjpeg"
-							} else {
-								camPtr.PixelFormat = cap.PixelFormat
+					camPtr := &a.cfg.Cameras[selectedIdx]
+
+					// Map role and eye selections
+					camRole := config.CameraRoleEnvironment
+					camEyeSide := ""
+					if roleSelect.Selected == i18n.T("cam_role_glasses") {
+						camRole = config.CameraRoleGlasses
+						switch eyeSelect.Selected {
+						case i18n.T("cam_eye_left"):
+							camEyeSide = config.EyeSideLeft
+						case i18n.T("cam_eye_both"):
+							camEyeSide = config.EyeSideBoth
+						default:
+							camEyeSide = config.EyeSideRight
+						}
+					}
+					camPtr.CameraRole = camRole
+					camPtr.EyeSide = camEyeSide
+
+					camPtr.Type = typeSelect.Selected
+					camPtr.RTSPURL = strings.TrimSpace(urlEntry.Text)
+					if camPtr.Type == "webcam" {
+						camPtr.Device = wcDevMap[webcamSelect.Selected]
+						if formatSelect.Selected != i18n.T("lbl_format_auto") && formatSelect.Selected != i18n.T("lbl_format_loading") {
+							if cap, ok := capMap[formatSelect.Selected]; ok {
+								camPtr.Width = cap.Width
+								camPtr.Height = cap.Height
+								camPtr.FPS = int(cap.FPS)
+								if cap.VCodec == "mjpeg" {
+									camPtr.PixelFormat = "mjpeg"
+								} else {
+									camPtr.PixelFormat = cap.PixelFormat
+								}
+							}
+						} else {
+							// Auto/Default selected, reset format overrides
+							camPtr.Width = 0
+							camPtr.Height = 0
+							camPtr.FPS = 0
+							camPtr.PixelFormat = ""
+						}
+
+						if runtime.GOOS == "linux" && linuxFPSEntry != nil && linuxFPSEntry.Text != "" {
+							if customFPS, err := strconv.Atoi(strings.TrimSpace(linuxFPSEntry.Text)); err == nil && customFPS > 0 {
+								camPtr.FPS = customFPS
 							}
 						}
-					} else {
-						// Auto/Default selected, reset format overrides
-						camPtr.Width = 0
-						camPtr.Height = 0
-						camPtr.FPS = 0
-						camPtr.PixelFormat = ""
 					}
 
-					if runtime.GOOS == "linux" && linuxFPSEntry != nil && linuxFPSEntry.Text != "" {
-						if customFPS, err := strconv.Atoi(strings.TrimSpace(linuxFPSEntry.Text)); err == nil && customFPS > 0 {
-							camPtr.FPS = customFPS
-						}
+					a.translateCameraNames()
+					_ = config.Save(*a.cfg, a.cfgPath)
+					a.multiManager.UpdateCamera(*camPtr)
+					if panel, exists := a.cameraPanels[cameraID]; exists {
+						panel.SetName(camPtr.Name)
 					}
-				}
-				_ = config.Save(*a.cfg, a.cfgPath)
-				a.multiManager.UpdateCamera(*camPtr)
-				if panel, exists := a.cameraPanels[cameraID]; exists {
-					panel.SetName(camPtr.Name)
-				}
-			}, a.window)
+				}, a.window)
 			d.Resize(fyne.NewSize(500, 450))
 			d.Show()
 		})
@@ -1035,22 +1098,86 @@ func (a *App) showAddCameraDialog() {
 		fyne.Do(func() {
 			progress.Hide()
 
-			nameEntry := widget.NewEntry()
-			nameEntry.SetPlaceHolder(i18n.T("placeholder_camera_name"))
-			nameEntry.Text = i18n.T("default_camera_name", len(a.cfg.Cameras)+1)
+			// ── Camera Role ──────────────────────────────────────────────
+			roleOptions := []string{
+				i18n.T("cam_role_environment"),
+				i18n.T("cam_role_glasses"),
+			}
+			roleSelect := widget.NewSelect(roleOptions, nil)
 
+			// Determine smart default: suggest whichever role is under-represented
+			envCount, glassCount := 0, 0
+			for _, c := range a.cfg.Cameras {
+				if c.CameraRole == config.CameraRoleGlasses {
+					glassCount++
+				} else {
+					envCount++
+				}
+			}
+			defaultRole := config.CameraRoleEnvironment
+			if glassCount < 1 {
+				defaultRole = config.CameraRoleGlasses
+			}
+			if defaultRole == config.CameraRoleGlasses {
+				roleSelect.SetSelected(i18n.T("cam_role_glasses"))
+			} else {
+				roleSelect.SetSelected(i18n.T("cam_role_environment"))
+			}
+
+			// ── Eye Side (glasses only) ───────────────────────────────────
+			eyeOptions := []string{
+				i18n.T("cam_eye_right"),
+				i18n.T("cam_eye_left"),
+				i18n.T("cam_eye_both"),
+			}
+			eyeSelect := widget.NewSelect(eyeOptions, nil)
+			eyeSelect.SetSelected(i18n.T("cam_eye_right"))
+			eyeFormItem := widget.NewFormItem(i18n.T("lbl_eye_side"), eyeSelect)
+
+			// Show/hide eye side selector based on role
+			eyeFormItem.Widget.Hide()
+			if roleSelect.Selected == i18n.T("cam_role_glasses") {
+				eyeFormItem.Widget.Show()
+			}
+
+			roleSelect.OnChanged = func(s string) {
+				if s == i18n.T("cam_role_glasses") {
+					eyeFormItem.Widget.Show()
+				} else {
+					eyeFormItem.Widget.Hide()
+				}
+			}
+
+			// ── Source Type ───────────────────────────────────────────────
 			sourceType := widget.NewSelect([]string{"IP", "Webcam"}, nil)
 			sourceType.SetSelected("IP")
 
 			urlEntry := widget.NewEntry()
 			urlEntry.SetPlaceHolder(i18n.T("placeholder_url"))
 
+			// Build webcam options, marking already-used devices
 			webcamSelect := widget.NewSelect(nil, nil)
 			var wcNames []string
-			wcDevMap := make(map[string]string)
+			wcDevMap := make(map[string]string)    // display name → device path
+			usedDevices := make(map[string]bool)   // device path → in use
+
+			a.mu.Lock()
+			for _, cam := range a.cfg.Cameras {
+				if cam.Enabled && cam.Type == "webcam" && cam.Device != "" {
+					usedDevices[cam.Device] = true
+				}
+			}
+			a.mu.Unlock()
+
 			for _, wc := range detected {
-				wcNames = append(wcNames, wc.Name)
-				wcDevMap[wc.Name] = wc.Device
+				var label string
+				if usedDevices[wc.Device] {
+					label = fmt.Sprintf("%s %s (%s)", i18n.T("lbl_in_use_device"), wc.Name, wc.Device)
+				} else {
+					label = wc.Name
+				}
+				wcNames = append(wcNames, label)
+				wcDevMap[label] = wc.Device
 			}
 			if len(wcNames) == 0 {
 				wcNames = append(wcNames, i18n.T("msg_webcam_not_found"))
@@ -1070,7 +1197,8 @@ func (a *App) showAddCameraDialog() {
 			}
 
 			formItems := []*widget.FormItem{
-				widget.NewFormItem(i18n.T("lbl_name"), nameEntry),
+				widget.NewFormItem(i18n.T("lbl_camera_role"), roleSelect),
+				eyeFormItem,
 				widget.NewFormItem(i18n.T("lbl_source"), sourceType),
 				widget.NewFormItem(i18n.T("lbl_ip_url"), urlEntry),
 				widget.NewFormItem(i18n.T("lbl_webcam"), webcamSelect),
@@ -1078,7 +1206,7 @@ func (a *App) showAddCameraDialog() {
 
 			innerForm := widget.NewForm(formItems...)
 			scrollableContent := container.NewVScroll(innerForm)
-			scrollableContent.SetMinSize(fyne.NewSize(500, 300))
+			scrollableContent.SetMinSize(fyne.NewSize(500, 340))
 
 			d := dialog.NewCustomConfirm(
 				i18n.T("title_add_camera"),
@@ -1089,6 +1217,21 @@ func (a *App) showAddCameraDialog() {
 					if !ok {
 						return
 					}
+
+				// Map role selection to config constants
+				camRole := config.CameraRoleEnvironment
+				camEyeSide := ""
+				if roleSelect.Selected == i18n.T("cam_role_glasses") {
+					camRole = config.CameraRoleGlasses
+					switch eyeSelect.Selected {
+					case i18n.T("cam_eye_left"):
+						camEyeSide = config.EyeSideLeft
+					case i18n.T("cam_eye_both"):
+						camEyeSide = config.EyeSideBoth
+					default:
+						camEyeSide = config.EyeSideRight
+					}
+				}
 
 				if sourceType.Selected == "IP" {
 					hasRTSP := false
@@ -1105,12 +1248,13 @@ func (a *App) showAddCameraDialog() {
 				}
 
 				cam := config.CameraSource{
-					ID:      config.NextCameraID(a.cfg.Cameras),
-					Name:    nameEntry.Text,
-					Width:   1280,
-					Height:  720,
-					FPS:     30,
-					Enabled: true,
+					ID:         config.NextCameraID(a.cfg.Cameras),
+					Width:      1280,
+					Height:     720,
+					FPS:        30,
+					Enabled:    true,
+					CameraRole: camRole,
+					EyeSide:    camEyeSide,
 				}
 
 				if sourceType.Selected == "IP" {
@@ -1118,7 +1262,13 @@ func (a *App) showAddCameraDialog() {
 					cam.RTSPURL = strings.TrimSpace(urlEntry.Text)
 				} else {
 					cam.Type = "webcam"
-					cam.Device = wcDevMap[webcamSelect.Selected]
+					dev := wcDevMap[webcamSelect.Selected]
+					// Guard: prevent selecting a device already in use
+					if usedDevices[dev] {
+						dialog.ShowError(fmt.Errorf("%s", i18n.T("msg_webcam_already_in_use")), a.window)
+						return
+					}
+					cam.Device = dev
 				}
 
 				prevServerCam := a.cfg.RTSPServerCamera
@@ -1126,6 +1276,9 @@ func (a *App) showAddCameraDialog() {
 					dialog.ShowError(err, a.window)
 					return
 				}
+
+				a.translateCameraNames()
+				_ = a.multiManager.SaveConfig()
 
 				if prevServerCam != a.cfg.RTSPServerCamera {
 					a.multiManager.Close()
@@ -1138,7 +1291,7 @@ func (a *App) showAddCameraDialog() {
 				a.rebuildGrid()
 			}, a.window)
 
-			d.Resize(fyne.NewSize(500, 350))
+			d.Resize(fyne.NewSize(500, 400))
 			d.Show()
 		})
 	}()
@@ -1225,186 +1378,212 @@ func (a *App) startRecording() {
 	order := append([]string(nil), a.cameraOrder...)
 	a.mu.Unlock()
 
-	byID := make(map[string]config.CameraSource, len(cfgCameras))
-	for _, camera := range cfgCameras {
-		byID[camera.ID] = camera
-	}
-	recordings := make([]stream.CameraRecording, 0, len(cfgCameras))
-	for _, id := range order {
-		camera, ok := byID[id]
-		if !ok || !camera.Enabled {
-			continue
-		}
-		manager := a.multiManager.GetManager(id)
-		if manager == nil {
-			continue
-		}
-		width, height := manager.ActiveResolution()
-		fps := manager.ActiveFPS()
-		if width <= 0 {
-			width = camera.Width
-		}
-		if height <= 0 {
-			height = camera.Height
-		}
-		if fps <= 0 {
-			fps = camera.FPS
-		}
-		recordings = append(recordings, stream.CameraRecording{
-			ID:         id,
-			Name:       camera.Name,
-			Width:      width,
-			Height:     height,
-			FPS:        fps,
-			Order:      len(recordings),
-			WasRunning: manager.State().Running,
-		})
-	}
-	if len(recordings) == 0 {
-		dialog.ShowError(fmt.Errorf("no enabled camera is available for recording"), a.window)
-		return
-	}
-	cols, rows := ui.CalculateGrid(len(recordings))
-
-	freeBytes, err := stream.DiskFreeBytes(a.cfg.RecordingsDir)
-	if err != nil {
-		a.logger.Printf("[recording] check disk space failed: %v", err)
-		dialog.ShowError(fmt.Errorf(i18n.T("disk_check_error"), err), a.window)
-		// Proceed anyway so a system error doesn't completely block recording
-		a.startTemporaryRecording(recordings, cols, rows)
-		return
-	}
-
-	var availableMins float64
-	if a.cfg.CompositeRecording {
-		availableMins = stream.EstimateCompositeAvailableMinutes(freeBytes, len(recordings), cols, rows)
-	} else {
-		availableMins = stream.EstimateCameraRecordingAvailableMinutes(freeBytes, recordings, cols, rows)
-	}
-	a.logger.Printf("[recording] disk space check: freeBytes=%d, estimated_mins=%.2f", freeBytes, availableMins)
-
-	if availableMins < 1.0 {
-		a.showDiskSpaceBlocked(func() {
-			a.changeRecordingsDirAndRetry()
-		})
-		return
-	} else if availableMins < 15.0 {
-		a.showDiskSpaceWarning(availableMins, func() {
-			a.startTemporaryRecording(recordings, cols, rows)
-		}, func() {
-			a.changeRecordingsDirAndRetry()
-		})
-		return
-	}
-
-	a.startTemporaryRecording(recordings, cols, rows)
-}
-
-func (a *App) startTemporaryRecording(cameras []stream.CameraRecording, cols, rows int) {
-	timestamp := time.Now().Format("20060102_150405")
-	tempPatientDir := filepath.Join(a.cfg.RecordingsDir, "Record_"+timestamp)
-	if err := os.MkdirAll(tempPatientDir, 0o755); err != nil {
-		dialog.ShowError(fmt.Errorf("failed to create temp recording directory: %w", err), a.window)
-		return
-	}
-	// Start with REC01; it will be adjusted if we append to an existing patient later
-	a.proceedWithRecording(cameras, cols, rows, tempPatientDir, "_REC01")
-}
-
-func (a *App) proceedWithRecording(cameras []stream.CameraRecording, cols, rows int, patientDir string, recordTag string) {
-	session, err := stream.NewRecordingSession(patientDir, cameras, cols, rows, recordTag)
-	if err != nil {
-		dialog.ShowError(err, a.window)
-		return
-	}
-
+	// Show progress toast immediately to keep UI responsive
 	content := container.NewVBox(widget.NewLabel(i18n.T("msg_please_wait")), widget.NewProgressBarInfinite())
 	progress := a.NewToastProgress(i18n.T("msg_please_wait"), content)
 	progress.Show()
 
 	go func() {
-		var startErr error
-		if a.cfg.CompositeRecording {
-			// In composite mode, we don't restart FFmpeg pipelines. We just start
-			// the composite recorder which reads from existing preview frames.
-			session.UpdateStartTime(time.Now())
-			ffmpegPath, _ := stream.ResolveFFmpegPath(a.cfg.FFmpegPath)
-			outFile := filepath.Join(patientDir, fmt.Sprintf("Genel_%s%s.mp4", time.Now().Format("20060102_150405"), recordTag))
-			
-			cameraOrder := make([]string, len(cameras))
-			for i, c := range cameras {
-				cameraOrder[i] = c.ID
+		byID := make(map[string]config.CameraSource, len(cfgCameras))
+		for _, camera := range cfgCameras {
+			byID[camera.ID] = camera
+		}
+		recordings := make([]stream.CameraRecording, 0, len(cfgCameras))
+		for _, id := range order {
+			camera, ok := byID[id]
+			if !ok || !camera.Enabled {
+				continue
 			}
-
-			a.mu.Lock()
-			a.compositeRecorder = stream.NewCompositeRecorder(
-				ffmpegPath,
-				outFile,
-				cameraOrder,
-				cols, rows,
-				a.logger,
-				func(fps int) {
-					fyne.Do(func() {
-						a.updatePerfBanner(fps)
-						if a.perfBanner != nil {
-							a.perfBanner.Show()
-						}
-					})
-				},
-			)
-			a.mu.Unlock()
-
-			startErr = a.compositeRecorder.Start()
-			
-			fyne.Do(func() {
-				a.initPerfBanner()
+			manager := a.multiManager.GetManager(id)
+			if manager == nil {
+				continue
+			}
+			width, height := manager.ActiveResolution()
+			fps := manager.ActiveFPS()
+			if width <= 0 {
+				width = camera.Width
+			}
+			if height <= 0 {
+				height = camera.Height
+			}
+			if fps <= 0 {
+				fps = camera.FPS
+			}
+			recordings = append(recordings, stream.CameraRecording{
+				ID:         id,
+				Name:       camera.Name,
+				Width:      width,
+				Height:     height,
+				FPS:        fps,
+				Order:      len(recordings),
+				WasRunning: manager.State().Running,
+				CameraRole: camera.CameraRole,
+				EyeSide:    camera.EyeSide,
 			})
-		} else {
-			startErr = a.multiManager.StartRecording(session, a.postProc.HardwareProfile())
 		}
 
+		if len(recordings) == 0 {
+			fyne.Do(func() {
+				progress.Hide()
+				dialog.ShowError(fmt.Errorf("no enabled camera is available for recording"), a.window)
+			})
+			return
+		}
+		cols, rows := ui.CalculateGrid(len(recordings))
+
+		freeBytes, err := stream.DiskFreeBytes(a.cfg.RecordingsDir)
+		if err != nil {
+			a.logger.Printf("[recording] check disk space failed: %v", err)
+			fyne.Do(func() {
+				progress.Hide()
+				dialog.ShowError(fmt.Errorf(i18n.T("disk_check_error"), err), a.window)
+			})
+			// Proceed in background
+			a.startTemporaryRecording(recordings, cols, rows, progress)
+			return
+		}
+
+		var availableMins float64
+		if a.cfg.CompositeRecording {
+			availableMins = stream.EstimateCompositeAvailableMinutes(freeBytes, len(recordings), cols, rows)
+		} else {
+			availableMins = stream.EstimateCameraRecordingAvailableMinutes(freeBytes, recordings, cols, rows)
+		}
+		a.logger.Printf("[recording] disk space check: freeBytes=%d, estimated_mins=%.2f", freeBytes, availableMins)
+
+		if availableMins < 1.0 {
+			fyne.Do(func() {
+				progress.Hide()
+				a.showDiskSpaceBlocked(func() {
+					a.changeRecordingsDirAndRetry()
+				})
+			})
+			return
+		} else if availableMins < 15.0 {
+			fyne.Do(func() {
+				progress.Hide()
+				a.showDiskSpaceWarning(availableMins, func() {
+					// User accepted: start async
+					content2 := container.NewVBox(widget.NewLabel(i18n.T("msg_please_wait")), widget.NewProgressBarInfinite())
+					prog2 := a.NewToastProgress(i18n.T("msg_please_wait"), content2)
+					prog2.Show()
+					go a.startTemporaryRecording(recordings, cols, rows, prog2)
+				}, func() {
+					a.changeRecordingsDirAndRetry()
+				})
+			})
+			return
+		}
+
+		a.startTemporaryRecording(recordings, cols, rows, progress)
+	}()
+}
+
+func (a *App) startTemporaryRecording(cameras []stream.CameraRecording, cols, rows int, progress *ToastProgress) {
+	timestamp := time.Now().Format("20060102_150405")
+	tempPatientDir := filepath.Join(a.cfg.RecordingsDir, "Record_"+timestamp)
+	if err := os.MkdirAll(tempPatientDir, 0o755); err != nil {
 		fyne.Do(func() {
 			progress.Hide()
-			if startErr != nil {
-				_ = os.RemoveAll(session.TempDir)
-				a.mu.Lock()
-				a.compositeRecorder = nil
-				a.mu.Unlock()
-				dialog.ShowError(startErr, a.window)
-				return
-			}
-
-			a.mu.Lock()
-			a.isRecording = true
-			a.recordSession = session
-			a.recordStart = session.StartedAt
-			a.mu.Unlock()
-
-			a.updateRecordBtn()
-
-			// Start timer display in status bar
-			a.recordTimer = time.NewTicker(time.Second)
-			go func() {
-				for range a.recordTimer.C {
-					a.mu.Lock()
-					recording := a.isRecording
-					a.mu.Unlock()
-					if !recording {
-						return
-					}
-					elapsed := time.Since(a.recordStart).Truncate(time.Second)
-					fyne.Do(func() {
-						if a.recordingTimeLabel != nil {
-							a.recordingTimeLabel.Text = i18n.T("lbl_status_bar_rec", elapsed)
-							a.recordingTimeLabel.Refresh()
-						}
-					})
-				}
-			}()
-
-			a.startDiskMonitor(session, cameras, cols, rows)
+			dialog.ShowError(fmt.Errorf("failed to create temp recording directory: %w", err), a.window)
 		})
-	}()
+		return
+	}
+	// Start with REC01; it will be adjusted if we append to an existing patient later
+	a.proceedWithRecording(cameras, cols, rows, tempPatientDir, "_REC01", progress)
+}
+
+func (a *App) proceedWithRecording(cameras []stream.CameraRecording, cols, rows int, patientDir string, recordTag string, progress *ToastProgress) {
+	session, err := stream.NewRecordingSession(patientDir, cameras, cols, rows, recordTag)
+	if err != nil {
+		fyne.Do(func() {
+			progress.Hide()
+			dialog.ShowError(err, a.window)
+		})
+		return
+	}
+
+	var startErr error
+	if a.cfg.CompositeRecording {
+		// In composite mode, we don't restart FFmpeg pipelines. We just start
+		// the composite recorder which reads from existing preview frames.
+		session.UpdateStartTime(time.Now())
+		ffmpegPath, _ := stream.ResolveFFmpegPath(a.cfg.FFmpegPath)
+		outFile := filepath.Join(patientDir, fmt.Sprintf("%s_%s%s.mp4", stream.GeneralVideoPrefix(), time.Now().Format("20060102_150405"), recordTag))
+		
+		cameraOrder := make([]string, len(cameras))
+		for i, c := range cameras {
+			cameraOrder[i] = c.ID
+		}
+
+		a.mu.Lock()
+		a.compositeRecorder = stream.NewCompositeRecorder(
+			ffmpegPath,
+			outFile,
+			cameraOrder,
+			cols, rows,
+			a.logger,
+			func(fps int) {
+				fyne.Do(func() {
+					a.updatePerfBanner(fps)
+					if a.perfBanner != nil {
+						a.perfBanner.Show()
+					}
+				})
+			},
+		)
+		a.mu.Unlock()
+
+		startErr = a.compositeRecorder.Start()
+		
+		fyne.Do(func() {
+			a.initPerfBanner()
+		})
+	} else {
+		startErr = a.multiManager.StartRecording(session, a.postProc.HardwareProfile())
+	}
+
+	fyne.Do(func() {
+		progress.Hide()
+		if startErr != nil {
+			_ = os.RemoveAll(session.TempDir)
+			a.mu.Lock()
+			a.compositeRecorder = nil
+			a.mu.Unlock()
+			dialog.ShowError(startErr, a.window)
+			return
+		}
+
+		a.mu.Lock()
+		a.isRecording = true
+		a.recordSession = session
+		a.recordStart = session.StartedAt
+		a.mu.Unlock()
+
+		a.updateRecordBtn()
+
+		// Start timer display in status bar
+		a.recordTimer = time.NewTicker(time.Second)
+		go func() {
+			for range a.recordTimer.C {
+				a.mu.Lock()
+				recording := a.isRecording
+				a.mu.Unlock()
+				if !recording {
+					return
+				}
+				elapsed := time.Since(a.recordStart).Truncate(time.Second)
+				fyne.Do(func() {
+					if a.recordingTimeLabel != nil {
+						a.recordingTimeLabel.Text = i18n.T("lbl_status_bar_rec", elapsed)
+						a.recordingTimeLabel.Refresh()
+					}
+				})
+			}
+		}()
+
+		a.startDiskMonitor(session, cameras, cols, rows)
+	})
 }
 
 func (a *App) showDiskSpaceWarning(availableMinutes float64, onProceed func(), onChangeDir func()) {
@@ -1720,15 +1899,17 @@ func (a *App) postProcessRecording(session *stream.RecordingSession, compositeRe
 					return
 				}
 
-				info, infoErr := stream.LoadPatientInfo(actualPatientDir)
-				if infoErr == nil {
-					info.Videos = append(info.Videos, stream.VideoFile{
-						FileName: filepath.Base(compositeFile),
-						Type:     "general",
-						Note:     note,
-					})
-					_ = stream.SavePatientInfo(actualPatientDir, info)
+				// Create a new Maneuver for this recording session and append it
+				maneuver := stream.Maneuver{
+					Note: note,
+					Videos: []stream.VideoFile{
+						{
+							FileName: filepath.Base(compositeFile),
+							Type:     "general",
+						},
+					},
 				}
+				_ = stream.AppendManeuver(actualPatientDir, maneuver)
 
 				if a.jobQueue != nil {
 					_ = a.jobQueue.EnqueueComposite(session, actualPatientDir, compositeFile)
@@ -1794,15 +1975,17 @@ func (a *App) postProcessRecording(session *stream.RecordingSession, compositeRe
 				}
 				
 				if result.Err == nil && len(result.Files) > 0 {
-					info, err := stream.LoadPatientInfo(actualPatientDir)
-					if err == nil {
-						info.Videos = append(info.Videos, stream.VideoFile{
-							FileName: filepath.Base(result.Files[0]),
-							Type:     "general",
-							Note:     note,
-						})
-						_ = stream.SavePatientInfo(actualPatientDir, info)
+					// Create a new Maneuver for this recording session
+					maneuver := stream.Maneuver{
+						Note: note,
+						Videos: []stream.VideoFile{
+							{
+								FileName: filepath.Base(result.Files[0]),
+								Type:     "general",
+							},
+						},
 					}
+					_ = stream.AppendManeuver(actualPatientDir, maneuver)
 				}
 
 				fyne.Do(func() {
@@ -2243,6 +2426,19 @@ func (a *App) toggleLayoutDrawer() {
 
 // --- Recordings Drawer (Kayıtlarım) ---
 
+type recItemUI struct {
+	NameText *canvas.Text
+	InfoText *canvas.Text
+	OpenBtn  *widget.Button
+	InfoBtn  *widget.Button
+	EditBtn  *widget.Button
+}
+
+var (
+	recordingListMap = make(map[fyne.CanvasObject]*recItemUI)
+	recordingListMu  sync.Mutex
+)
+
 func (a *App) buildRecordingsDrawer() {
 	drawerBg := canvas.NewRectangle(colorCardSurface)
 
@@ -2261,14 +2457,117 @@ func (a *App) buildRecordingsDrawer() {
 
 	header := container.NewBorder(nil, nil, nil, closeBtn, container.NewPadded(titleLabel))
 
-	a.recordingsListContainer = container.NewVBox()
-	scroll := container.NewVScroll(a.recordingsListContainer)
+	a.recordingsList = widget.NewList(
+		func() int {
+			a.mu.Lock()
+			defer a.mu.Unlock()
+			return len(a.recordingsData)
+		},
+		func() fyne.CanvasObject {
+			nameText := canvas.NewText("", colorTextPrimary)
+			nameText.TextSize = 12
+			nameText.TextStyle = fyne.TextStyle{Bold: true}
+
+			infoText := canvas.NewText("", colorTextSecondary)
+			infoText.TextSize = 10
+
+			textCol := container.NewVBox(nameText, infoText)
+
+			openBtn := widget.NewButtonWithIcon("", theme.FolderOpenIcon(), nil)
+			openBtn.Importance = widget.LowImportance
+
+			infoBtn := widget.NewButtonWithIcon("", theme.InfoIcon(), nil)
+			infoBtn.Importance = widget.LowImportance
+			
+			editBtn := widget.NewButtonWithIcon("", theme.DocumentCreateIcon(), nil)
+			editBtn.Importance = widget.LowImportance
+
+			actions := container.NewHBox(infoBtn, editBtn, openBtn)
+			itemContent := container.NewBorder(nil, nil, nil, actions, container.NewPadded(textCol))
+
+			itemBg := canvas.NewRectangle(colorInputSurface)
+			itemBg.CornerRadius = 6
+
+			stack := container.NewStack(itemBg, container.NewPadded(itemContent))
+
+			recordingListMu.Lock()
+			recordingListMap[stack] = &recItemUI{
+				NameText: nameText,
+				InfoText: infoText,
+				OpenBtn:  openBtn,
+				InfoBtn:  infoBtn,
+				EditBtn:  editBtn,
+			}
+			recordingListMu.Unlock()
+
+			return stack
+		},
+		func(i widget.ListItemID, o fyne.CanvasObject) {
+			a.mu.Lock()
+			if int(i) >= len(a.recordingsData) {
+				a.mu.Unlock()
+				return
+			}
+			rec := a.recordingsData[i]
+			a.mu.Unlock()
+
+			recordingListMu.Lock()
+			uiElems := recordingListMap[o]
+			recordingListMu.Unlock()
+
+			if uiElems == nil {
+				return
+			}
+
+			uiElems.NameText.Text = rec.Name
+			if uiElems.NameText.Text == "" {
+				uiElems.NameText.Text = "—"
+			}
+			uiElems.NameText.Refresh()
+
+			dateStr := rec.Date.Format("02.01.2006 15:04")
+			infoStr := fmt.Sprintf("%s - %s", dateStr, fmt.Sprintf(i18n.T("recordings_maneuver_count"), rec.ManeuverCount))
+			uiElems.InfoText.Text = infoStr
+			uiElems.InfoText.Refresh()
+
+			recDir := rec.Dir
+			uiElems.OpenBtn.OnTapped = func() {
+				openPath(recDir)
+			}
+			uiElems.InfoBtn.OnTapped = func() {
+				info, err := stream.LoadPatientInfo(recDir)
+				if err == nil {
+					a.showPatientInfoDialog(info)
+				}
+			}
+			uiElems.EditBtn.OnTapped = func() {
+				info, err := stream.LoadPatientInfo(recDir)
+				if err == nil {
+					a.showEditPatientDialog(recDir, info, func(updated stream.PatientInfo) {
+						a.mu.Lock()
+						for idx := range a.recordingsData {
+							if a.recordingsData[idx].Dir == recDir {
+								a.recordingsData[idx].Name = updated.Name
+								break
+							}
+						}
+						a.mu.Unlock()
+						if a.recordingsList != nil {
+							a.recordingsList.RefreshItem(i)
+						}
+					})
+				}
+			}
+		},
+	)
+
+	a.recordingsListContainer = container.NewStack(a.recordingsList)
 
 	drawerContent := container.NewBorder(
 		container.NewVBox(header, widget.NewSeparator()),
 		nil,
 		nil, nil,
-		scroll,
+		a.recordingsListContainer,
 	)
 
 	a.recordingsDrawerPanel = container.NewStack(drawerBg, drawerSpacer, drawerContent)
@@ -2306,33 +2605,49 @@ func (a *App) refreshRecordingsList() {
 	entries, err := os.ReadDir(recDir)
 	if err != nil {
 		fyne.Do(func() {
-			a.recordingsListContainer.Objects = nil
 			emptyLabel := widget.NewLabel(i18n.T("recordings_empty"))
 			emptyLabel.Alignment = fyne.TextAlignCenter
-			a.recordingsListContainer.Add(emptyLabel)
+			a.recordingsListContainer.Objects = []fyne.CanvasObject{emptyLabel}
 			a.recordingsListContainer.Refresh()
 		})
 		return
 	}
 
-	var recordings []recordingEntry
+	type dirData struct {
+		entry   os.DirEntry
+		modTime time.Time
+	}
+	var dirs []dirData
 	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
+		if entry.IsDir() {
+			info, err := entry.Info()
+			if err == nil {
+				dirs = append(dirs, dirData{entry: entry, modTime: info.ModTime()})
+			}
 		}
-		dirPath := filepath.Join(recDir, entry.Name())
+	}
+
+	// Klasörleri değiştirilme tarihine göre sırala (en yeni en üstte)
+	sort.Slice(dirs, func(i, j int) bool {
+		return dirs[i].modTime.After(dirs[j].modTime)
+	})
+
+	// Sadece en yeni 50 klasörü işle (JSON okumayı limitle)
+	limit := 50
+	if len(dirs) < limit {
+		limit = len(dirs)
+	}
+
+	var recordings []recordingEntry
+	for _, data := range dirs[:limit] {
+		dirPath := filepath.Join(recDir, data.entry.Name())
 		info, err := stream.LoadPatientInfo(dirPath)
 		if err != nil {
 			continue
 		}
 
-		// Count maneuvers: number of "general" type videos
-		maneuverCount := 0
-		for _, v := range info.Videos {
-			if v.Type == "general" {
-				maneuverCount++
-			}
-		}
+		// Count maneuvers using the new structure
+		maneuverCount := len(info.Maneuvers)
 		if maneuverCount == 0 {
 			maneuverCount = 1 // At least 1 if patient_info exists
 		}
@@ -2345,75 +2660,23 @@ func (a *App) refreshRecordingsList() {
 		})
 	}
 
-	// Sort by date, newest first
+	// Son olarak gerçek RecordDate'e göre sırala
 	sort.Slice(recordings, func(i, j int) bool {
 		return recordings[i].Date.After(recordings[j].Date)
 	})
 
-	// Limit to 50
-	if len(recordings) > 50 {
-		recordings = recordings[:50]
-	}
-
 	fyne.Do(func() {
-		a.recordingsListContainer.Objects = nil
+		a.mu.Lock()
+		a.recordingsData = recordings
+		a.mu.Unlock()
 
 		if len(recordings) == 0 {
 			emptyLabel := widget.NewLabel(i18n.T("recordings_empty"))
 			emptyLabel.Alignment = fyne.TextAlignCenter
-			a.recordingsListContainer.Add(emptyLabel)
-			a.recordingsListContainer.Refresh()
-			return
-		}
-
-		for _, rec := range recordings {
-			recDir := rec.Dir
-
-			nameText := canvas.NewText(rec.Name, colorTextPrimary)
-			nameText.TextSize = 12
-			nameText.TextStyle = fyne.TextStyle{Bold: true}
-			if rec.Name == "" {
-				nameText.Text = "—"
-			}
-
-			dateStr := rec.Date.Format("02.01.2006 15:04")
-			infoStr := fmt.Sprintf("%s - %s", dateStr, fmt.Sprintf(i18n.T("recordings_maneuver_count"), rec.ManeuverCount))
-			infoText := canvas.NewText(infoStr, colorTextSecondary)
-			infoText.TextSize = 10
-
-			textCol := container.NewVBox(nameText, infoText)
-
-			openBtn := widget.NewButtonWithIcon("", theme.FolderOpenIcon(), func() {
-				openPath(recDir)
-			})
-			openBtn.Importance = widget.LowImportance
-
-			infoBtn := widget.NewButtonWithIcon("", theme.InfoIcon(), func() {
-				// We load info here again to ensure we get the latest if edited
-				info, err := stream.LoadPatientInfo(recDir)
-				if err == nil {
-					a.showPatientInfoDialog(info)
-				}
-			})
-			infoBtn.Importance = widget.LowImportance
-			
-			editBtn := widget.NewButtonWithIcon("", theme.DocumentCreateIcon(), func() {
-				info, err := stream.LoadPatientInfo(recDir)
-				if err == nil {
-					a.showEditPatientDialog(recDir, info)
-				}
-			})
-			editBtn.Importance = widget.LowImportance
-
-			actions := container.NewHBox(infoBtn, editBtn, openBtn)
-			itemContent := container.NewBorder(nil, nil, nil, actions, container.NewPadded(textCol))
-
-			itemBg := canvas.NewRectangle(colorInputSurface)
-			itemBg.CornerRadius = 6
-
-			itemCard := container.NewStack(itemBg, container.NewPadded(itemContent))
-
-			a.recordingsListContainer.Add(itemCard)
+			a.recordingsListContainer.Objects = []fyne.CanvasObject{emptyLabel}
+		} else {
+			a.recordingsListContainer.Objects = []fyne.CanvasObject{a.recordingsList}
+			a.recordingsList.Refresh()
 		}
 		a.recordingsListContainer.Refresh()
 	})
@@ -2442,50 +2705,8 @@ func (a *App) showRecordingsDrawerWithHighlight(patientDir string) {
 }
 
 func (a *App) blinkRecordingItem(patientDir string) {
-	if a.recordingsListContainer == nil {
-		return
-	}
-
-	// Find the card that matches the patient dir
-	// Each item is a Stack(itemBg, Padded(itemContent))
-	// We find it by searching items with matching dir
-	a.mu.Lock()
-	recDir := a.cfg.RecordingsDir
-	a.mu.Unlock()
-
-	targetBase := filepath.Base(patientDir)
-	targetFull := filepath.Join(recDir, targetBase)
-	_ = targetFull
-
-	// Search through list items to find matching background rect
-	for _, obj := range a.recordingsListContainer.Objects {
-		if stack, ok := obj.(*fyne.Container); ok && len(stack.Objects) >= 1 {
-			if bg, ok := stack.Objects[0].(*canvas.Rectangle); ok {
-				// We need to identify the correct item. Since items are in order
-				// and we just refreshed, we try to match by checking the patient dir.
-				// Use the text content to match the name.
-				highlightBg := bg
-				go func() {
-					normalColor := colorInputSurface
-					highlightColor := color.NRGBA{R: 243, G: 156, B: 18, A: 200} // Amber
-
-					for i := 0; i < 3; i++ {
-						fyne.Do(func() {
-							highlightBg.FillColor = highlightColor
-							highlightBg.Refresh()
-						})
-						time.Sleep(300 * time.Millisecond)
-						fyne.Do(func() {
-							highlightBg.FillColor = normalColor
-							highlightBg.Refresh()
-						})
-						time.Sleep(300 * time.Millisecond)
-					}
-				}()
-				return // Blink only the first (newest) item, which matches after refresh
-			}
-		}
-	}
+	// Blinking animation disabled: Fyne layout engine freezes when refreshing
+	// multiple containers simultaneously, causing severe UI lags.
 }
 
 func (a *App) loadLayoutByName(name string) {
@@ -2913,6 +3134,8 @@ func (a *App) Run() error {
 		a.patientCache.SetFilePath(filepath.Join(filepath.Dir(cfgPath), "patient_cache.json"))
 		a.mu.Unlock()
 
+		a.translateCameraNames()
+
 		if jq != nil {
 			jq.SetCallbacks(
 				func(id string, progress float64, status string, isComposite bool) {
@@ -3057,44 +3280,76 @@ func (a *App) Quit() {
 		// Run cleanup for completed jobs
 		if jobs, err := a.jobQueue.GetCompletedJobs(); err == nil {
 			for _, job := range jobs {
-				// Verify if outputs exist for the completed jobs
 				patientInfo, err := stream.LoadPatientInfo(job.PatientDir)
-				if err == nil && len(patientInfo.Videos) > 0 {
-					allValid := true
-					for _, vid := range patientInfo.Videos {
-						vidPath := filepath.Join(job.PatientDir, vid.FileName)
-						if err := a.postProc.VerifyOutput(vidPath); err != nil {
-							allValid = false
-							break
+				if err != nil {
+					continue
+				}
+
+				// Check if verified already, or verify now using fast check first, fallback to VerifyOutput
+				allValid := job.Verified
+				if !allValid {
+					// Gather all video files to check
+					var videos []stream.VideoFile
+					for _, m := range patientInfo.Maneuvers {
+						videos = append(videos, m.Videos...)
+					}
+					videos = append(videos, patientInfo.Videos...) // include legacy flat list if any
+
+					if len(videos) > 0 {
+						allValid = true
+						for _, vid := range videos {
+							vidPath := filepath.Join(job.PatientDir, vid.FileName)
+							// Fast check: does it exist and is non-empty?
+							if info, statErr := os.Stat(vidPath); statErr != nil || info.Size() == 0 {
+								allValid = false
+								break
+							}
+							// As a safeguard, verify output using ffprobe if not verified
+							if err := a.postProc.VerifyOutput(vidPath); err != nil {
+								allValid = false
+								break
+							}
 						}
 					}
-					// If all processed videos are valid, delete the raw directory safely
-					if allValid {
-						rawDir := filepath.Join(job.PatientDir, "raw")
-						if _, err := os.Stat(rawDir); err == nil {
-							_ = os.RemoveAll(rawDir)
-						}
-						
-						// Silme ve Yer Değiştirme Mantığı: Arka plan işi bitince Genel_Onizleme.mp4 dosyasını temizle
-						files, _ := filepath.Glob(filepath.Join(job.PatientDir, "Genel_Onizleme_*.mp4"))
-						for _, f := range files {
-							_ = os.Remove(f)
-						}
-						
-						// Remove Genel_Onizleme from PatientInfo.Videos if it exists
-						if pInfo, err := stream.LoadPatientInfo(job.PatientDir); err == nil {
-							var updatedVideos []stream.VideoFile
-							for _, v := range pInfo.Videos {
+				}
+
+				if allValid {
+					// 1. Delete raw directory safely
+					rawDir := filepath.Join(job.PatientDir, "raw")
+					if _, err := os.Stat(rawDir); err == nil {
+						_ = os.RemoveAll(rawDir)
+					}
+
+					// 2. Delete Genel_Onizleme_*.mp4 preview files
+					files, _ := filepath.Glob(filepath.Join(job.PatientDir, "Genel_Onizleme_*.mp4"))
+					for _, f := range files {
+						_ = os.Remove(f)
+					}
+
+					// 3. Remove Genel_Onizleme references from maneuvers list
+					if pInfo, err := stream.LoadPatientInfo(job.PatientDir); err == nil {
+						for mIdx := range pInfo.Maneuvers {
+							var cleanVids []stream.VideoFile
+							for _, v := range pInfo.Maneuvers[mIdx].Videos {
 								if !strings.HasPrefix(v.FileName, "Genel_Onizleme_") {
-									updatedVideos = append(updatedVideos, v)
+									cleanVids = append(cleanVids, v)
 								}
 							}
-							pInfo.Videos = updatedVideos
-							_ = stream.SavePatientInfo(job.PatientDir, pInfo)
+							pInfo.Maneuvers[mIdx].Videos = cleanVids
 						}
 
-						a.jobQueue.DeleteJob(job.ID)
+						var cleanLegacy []stream.VideoFile
+						for _, v := range pInfo.Videos {
+							if !strings.HasPrefix(v.FileName, "Genel_Onizleme_") {
+								cleanLegacy = append(cleanLegacy, v)
+							}
+						}
+						pInfo.Videos = cleanLegacy
+
+						_ = stream.SavePatientInfo(job.PatientDir, pInfo)
 					}
+
+					a.jobQueue.DeleteJob(job.ID)
 				}
 			}
 		}
@@ -3235,9 +3490,60 @@ func (a *App) showCameraContextMenu(cameraID string, ev *fyne.PointEvent) {
 		fyne.NewMenuItem(i18n.T("menu_record_single"), func() {
 			a.toggleRecording() // For now, starts/stops composite recording
 		}),
+		fyne.NewMenuItemSeparator(),
+		fyne.NewMenuItem(i18n.T("menu_delete_camera"), func() {
+			a.deleteCameraByID(cameraID)
+		}),
 	)
 
 	widget.ShowPopUpMenuAtPosition(menu, a.window.Canvas(), ev.AbsolutePosition)
+}
+
+// deleteCameraByID removes a camera by ID, with minimum-camera guard and confirmation.
+func (a *App) deleteCameraByID(cameraID string) {
+	if a.blockWhileRecording() {
+		return
+	}
+	if len(a.cfg.Cameras) <= config.MinCameras {
+		a.sendOSNotification(i18n.T("err_limit"), i18n.T("msg_min_cameras", config.MinCameras))
+		return
+	}
+
+	camName := cameraID
+	for _, c := range a.cfg.Cameras {
+		if c.ID == cameraID {
+			camName = c.Name
+			break
+		}
+	}
+
+	dialog.ShowConfirm(i18n.T("title_delete_camera"), i18n.T("msg_confirm_delete", camName), func(ok bool) {
+		if !ok {
+			return
+		}
+
+		prevServerCam := a.cfg.RTSPServerCamera
+		if err := a.multiManager.RemoveCamera(cameraID); err != nil {
+			dialog.ShowError(err, a.window)
+			return
+		}
+
+		if prevServerCam != a.cfg.RTSPServerCamera {
+			a.multiManager.Close()
+			a.multiManager = stream.NewMultiManager(a.cfg, a.cfgPath, a.logger)
+			if a.cfg.AutoStart {
+				a.multiManager.StartAll()
+			}
+		}
+
+		a.mu.Lock()
+		if a.selectedCamera == cameraID && len(a.cfg.Cameras) > 0 {
+			a.selectedCamera = a.cfg.Cameras[0].ID
+		}
+		a.mu.Unlock()
+
+		a.rebuildGrid()
+	}, a.window)
 }
 
 func restartApp() {
@@ -3485,6 +3791,26 @@ func renderTree(node miniNode, x, y, w, h float32, list []fyne.CanvasObject, cam
 	}
 
 	return list
+}
+
+func (a *App) translateCameraNames() {
+	envCount := 1
+	for i := range a.cfg.Cameras {
+		cam := &a.cfg.Cameras[i]
+		if cam.CameraRole == config.CameraRoleEnvironment {
+			cam.Name = fmt.Sprintf(i18n.T("cam_name_auto_env"), envCount)
+			envCount++
+		} else { // glasses
+			switch cam.EyeSide {
+			case config.EyeSideLeft:
+				cam.Name = i18n.T("cam_name_auto_left")
+			case config.EyeSideBoth:
+				cam.Name = i18n.T("cam_name_auto_both")
+			default:
+				cam.Name = i18n.T("cam_name_auto_right")
+			}
+		}
+	}
 }
 
 

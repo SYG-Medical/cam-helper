@@ -20,10 +20,10 @@ import (
 func (a *App) showPatientInfoDrawerAfterRecording(session *stream.RecordingSession, compositeRec *stream.CompositeRecorder) {
 	nameEntry := widget.NewEntry()
 	nameEntry.SetPlaceHolder(i18n.T("record_patient_placeholder"))
-	
+
 	patientIDEntry := widget.NewEntry()
 	patientIDEntry.SetPlaceHolder(i18n.T("record_patient_id_placeholder"))
-	
+
 	noteEntry := widget.NewMultiLineEntry()
 	noteEntry.SetPlaceHolder(i18n.T("record_patient_history_placeholder"))
 	noteEntry.SetMinRowsVisible(3)
@@ -58,7 +58,7 @@ func (a *App) showPatientInfoDrawerAfterRecording(session *stream.RecordingSessi
 			finalPatientDir = stream.GetOutputDir(a.cfg.RecordingsDir, patientName)
 			a.patientCache.Store(patientName, patientID, finalPatientDir)
 		}
-		
+
 		// Ensure directory exists
 		_ = os.MkdirAll(finalPatientDir, 0o755)
 
@@ -77,7 +77,7 @@ func (a *App) showPatientInfoDrawerAfterRecording(session *stream.RecordingSessi
 		actualTempDir := filepath.Dir(session.TempDir)
 
 		dlg.Hide()
-		
+
 		a.postProcessRecording(session, compositeRec, actualTempDir, finalPatientDir, note)
 	})
 
@@ -98,65 +98,125 @@ func (a *App) showPatientInfoDrawerAfterRecording(session *stream.RecordingSessi
 	dlg.Show()
 }
 
+// showPatientInfoDialog shows a read-only summary of patient info, using Maneuvers.
 func (a *App) showPatientInfoDialog(info stream.PatientInfo) {
-	details := fmt.Sprintf("Ad: %s\nID: %s\nTarih: %s\n\nManevralar:\n", 
+	details := fmt.Sprintf("Ad: %s\nID: %s\nTarih: %s\n",
 		info.Name, info.PatientID, info.RecordDate.Format("02.01.2006 15:04"))
-	
-	for i, v := range info.Videos {
-		if v.Type == "general" {
-			details += fmt.Sprintf("%d. Manevra: %s\n", i+1, v.Note)
+
+	if len(info.Maneuvers) > 0 {
+		details += "\nManevralar:\n"
+		for _, m := range info.Maneuvers {
+			note := m.Note
+			if note == "" {
+				note = "—"
+			}
+			details += fmt.Sprintf("  %d. Manevra: %s\n", m.Index, note)
+			for _, v := range m.Videos {
+				if v.Type == "camera" && v.CameraType != "" {
+					details += fmt.Sprintf("     └ %s (%s)\n", v.FileName, v.Camera)
+				}
+			}
+		}
+	} else if len(info.Videos) > 0 {
+		// Legacy format fallback
+		details += "\nVideolar:\n"
+		for _, v := range info.Videos {
+			details += fmt.Sprintf("  - %s (%s)\n", v.FileName, v.Type)
 		}
 	}
-	
+
 	dialog.ShowInformation("Hasta Bilgileri", details, a.window)
 }
 
-func (a *App) showEditPatientDialog(dir string, info stream.PatientInfo) {
+// showEditPatientDialog allows editing patient name, ID, and per-maneuver notes.
+func (a *App) showEditPatientDialog(dir string, info stream.PatientInfo, onSaved func(updated stream.PatientInfo)) {
 	nameEntry := widget.NewEntry()
 	nameEntry.SetText(info.Name)
-	
+
 	patientIDEntry := widget.NewEntry()
 	patientIDEntry.SetText(info.PatientID)
-	
-	// Create entries for notes
-	var noteEntries []*widget.Entry
+
 	var formItems []*widget.FormItem
-	
 	formItems = append(formItems, widget.NewFormItem("Ad", nameEntry))
 	formItems = append(formItems, widget.NewFormItem("ID", patientIDEntry))
-	
-	for _, v := range info.Videos {
-		if v.Type == "general" {
-			noteEntry := widget.NewMultiLineEntry()
-			noteEntry.SetText(v.Note)
-			noteEntry.SetMinRowsVisible(2)
-			noteEntries = append(noteEntries, noteEntry)
-			formItems = append(formItems, widget.NewFormItem(fmt.Sprintf("%d. Manevra Notu", len(noteEntries)), noteEntry))
+
+	// Collect note entries per maneuver
+	noteEntries := make([]*widget.Entry, len(info.Maneuvers))
+	for i, m := range info.Maneuvers {
+		noteEntry := widget.NewMultiLineEntry()
+		noteEntry.SetText(m.Note)
+		noteEntry.SetMinRowsVisible(2)
+		noteEntries[i] = noteEntry
+
+		// Build video summary for this maneuver
+		vidSummary := ""
+		for _, v := range m.Videos {
+			cam := v.Camera
+			if cam == "" {
+				cam = v.Type
+			}
+			vidSummary += "• " + v.FileName + " (" + cam + ")\n"
+		}
+
+		label := fmt.Sprintf("%d. Manevra", m.Index)
+		formItems = append(formItems, widget.NewFormItem(label+" Notu", noteEntry))
+		if vidSummary != "" {
+			summaryLbl := widget.NewLabel(strings.TrimRight(vidSummary, "\n"))
+			summaryLbl.Wrapping = fyne.TextWrapBreak
+			formItems = append(formItems, widget.NewFormItem(label+" Videoları", summaryLbl))
 		}
 	}
-	
+
+	// Legacy: if no maneuvers but flat videos exist, show them for reference
+	if len(info.Maneuvers) == 0 && len(info.Videos) > 0 {
+		for i, v := range info.Videos {
+			if v.Type == "general" {
+				noteEntry := widget.NewMultiLineEntry()
+				noteEntry.SetText(v.Note)
+				noteEntry.SetMinRowsVisible(2)
+				noteEntries = append(noteEntries, noteEntry)
+				formItems = append(formItems, widget.NewFormItem(fmt.Sprintf("%d. Manevra Notu", i+1), noteEntry))
+			}
+		}
+	}
+
 	form := widget.NewForm(formItems...)
-	
-	d := dialog.NewCustomConfirm("Hasta Düzenle", "Kaydet", "İptal", container.NewVScroll(form), func(ok bool) {
-		if ok {
-			info.Name = strings.TrimSpace(nameEntry.Text)
-			info.PatientID = strings.TrimSpace(patientIDEntry.Text)
-			
+	scrolled := container.NewVScroll(form)
+	scrolled.SetMinSize(fyne.NewSize(380, 400))
+
+	d := dialog.NewCustomConfirm("Hasta Düzenle", "Kaydet", "İptal", scrolled, func(ok bool) {
+		if !ok {
+			return
+		}
+		info.Name = strings.TrimSpace(nameEntry.Text)
+		info.PatientID = strings.TrimSpace(patientIDEntry.Text)
+
+		// Update maneuver notes
+		for i := range info.Maneuvers {
+			if i < len(noteEntries) && noteEntries[i] != nil {
+				info.Maneuvers[i].Note = strings.TrimSpace(noteEntries[i].Text)
+			}
+		}
+
+		// Legacy: update flat Videos notes if no maneuvers
+		if len(info.Maneuvers) == 0 {
 			noteIdx := 0
 			for i, v := range info.Videos {
-				if v.Type == "general" {
+				if v.Type == "general" && noteIdx < len(noteEntries) {
 					info.Videos[i].Note = strings.TrimSpace(noteEntries[noteIdx].Text)
 					noteIdx++
 				}
 			}
-			
-			if err := stream.SavePatientInfo(dir, info); err != nil {
-				dialog.ShowError(err, a.window)
-			} else {
-				a.refreshRecordingsList()
+		}
+
+		if err := stream.SavePatientInfo(dir, info); err != nil {
+			dialog.ShowError(err, a.window)
+		} else {
+			if onSaved != nil {
+				onSaved(info)
 			}
 		}
 	}, a.window)
-	d.Resize(fyne.NewSize(400, 500))
+	d.Resize(fyne.NewSize(420, 520))
 	d.Show()
 }
