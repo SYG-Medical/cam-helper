@@ -101,11 +101,17 @@ type App struct {
 	jobQueueLabel      *canvas.Text
 	statusBarContainer *fyne.Container
 
-	// Layout drawer elements
+	// Layout drawer elements (Sahneler - left side)
 	drawerPanel         *fyne.Container
 	layoutListContainer *fyne.Container
 	layoutsRef          *widget.Button // for spotlight tutorials
 	drawerVisible       bool
+
+	// Recordings drawer elements (Kayıtlarım - right side)
+	recordingsDrawerPanel   *fyne.Container
+	recordingsListContainer *fyne.Container
+	recordingsDrawerVisible bool
+	recordingsBtn           *widget.Button
 
 	overlayContainer *fyne.Container
 
@@ -212,8 +218,11 @@ func (a *App) setupUI() {
 	a.buildCameraGrid()
 	a.refreshCameraDropdowns()
 
-	// Build layout drawer
+	// Build layout drawer (Sahneler - left side)
 	a.buildLayoutDrawer()
+
+	// Build recordings drawer (Kayıtlarım - right side)
+	a.buildRecordingsDrawer()
 
 	// Content area: toolbar on top, status bar on bottom, camera grid in center
 	mainContent := container.NewBorder(
@@ -223,10 +232,10 @@ func (a *App) setupUI() {
 		a.gridContainer,
 	)
 
-	// Final layout: drawerPanel on the right (full height), mainContent fills the rest
+	// Final layout: Sahneler drawer on the left, Kayıtlarım drawer on the right
 	content := container.NewBorder(
 		nil, nil,
-		nil, a.drawerPanel, // Right: drawer panel spans full height
+		a.drawerPanel, a.recordingsDrawerPanel, // Left: Sahneler, Right: Kayıtlarım
 		mainContent,
 	)
 
@@ -328,21 +337,26 @@ func (a *App) buildToolbar() *fyne.Container {
 	})
 	a.settingsRef = settingsBtn
 
-	// Layouts drawer toggle button — with label
+	// Layouts/Scenes drawer toggle button — with label (far left)
 	layoutsBtn := widget.NewButtonWithIcon(i18n.T("btn_layouts"), theme.MenuIcon(), func() {
 		a.toggleLayoutDrawer()
 	})
 	a.layoutsRef = layoutsBtn
+
+	// Recordings drawer toggle button — with label (far right)
+	a.recordingsBtn = widget.NewButtonWithIcon(i18n.T("btn_recordings"), theme.FolderIcon(), func() {
+		a.toggleRecordingsDrawer()
+	})
 
 	// Help/Tutorial button
 	helpBtn := widget.NewButtonWithIcon("", theme.QuestionIcon(), func() {
 		a.showTutorial()
 	})
 
-	// Layout: [+ Ekle] [- Sil] | [▶ Tümünü Başlat] [⏺ Kayıt] | [⚙] [?] | [Düzenler]
-	leftGroup := container.NewHBox(a.addBtn, a.removeBtn)
+	// Layout: [Sahneler] | [+ Ekle] [- Sil] | [▶ Tümünü Başlat] [⏺ Kayıt] | [⚙] [?] | [Kayıtlarım]
+	leftGroup := container.NewHBox(layoutsBtn, widget.NewSeparator(), a.addBtn, a.removeBtn)
 	middleGroup := container.NewHBox(a.startStopAllBtn, widget.NewSeparator(), a.recordBtn)
-	rightGroup := container.NewHBox(widget.NewSeparator(), settingsBtn, helpBtn, widget.NewSeparator(), layoutsBtn)
+	rightGroup := container.NewHBox(widget.NewSeparator(), settingsBtn, helpBtn, widget.NewSeparator(), a.recordingsBtn)
 
 	return container.NewBorder(nil, nil, leftGroup, rightGroup, container.NewCenter(middleGroup))
 }
@@ -459,6 +473,9 @@ func (a *App) updateToolbarLabels() {
 			if a.layoutsRef != nil {
 				a.layoutsRef.SetText("")
 			}
+			if a.recordingsBtn != nil {
+				a.recordingsBtn.SetText("")
+			}
 		} else {
 			a.addBtn.SetText(i18n.T("btn_toolbar_add"))
 			if a.removeBtn != nil {
@@ -466,6 +483,9 @@ func (a *App) updateToolbarLabels() {
 			}
 			if a.layoutsRef != nil {
 				a.layoutsRef.SetText(i18n.T("btn_layouts"))
+			}
+			if a.recordingsBtn != nil {
+				a.recordingsBtn.SetText(i18n.T("btn_recordings"))
 			}
 
 			// Update startStopAllBtn text based on running streams
@@ -506,6 +526,9 @@ func (a *App) updateToolbarLabels() {
 		a.recordBtn.Refresh()
 		if a.layoutsRef != nil {
 			a.layoutsRef.Refresh()
+		}
+		if a.recordingsBtn != nil {
+			a.recordingsBtn.Refresh()
 		}
 	})
 }
@@ -1686,24 +1709,11 @@ func (a *App) stopRecording() {
 					_ = a.jobQueue.EnqueueComposite(session, actualPatientDir, compositeFile)
 				}
 
-				// Show instant success dialog.
-				msg := i18n.T("record_composite_done_msg")
-				openBtn := widget.NewButtonWithIcon(i18n.T("record_done_open"), theme.FolderOpenIcon(), func() {
-					openPath(actualPatientDir)
-				})
-				openBtn.Importance = widget.HighImportance
-				closeBtn := widget.NewButton(i18n.T("record_done_close"), nil)
+				// Send OS notification instead of blocking dialog
+				a.sendOSNotification(i18n.T("record_done_title"), i18n.T("record_saved_notification"))
 
-				btnRow := container.NewHBox(layout.NewSpacer(), openBtn, closeBtn)
-				successContent := container.NewVBox(widget.NewLabel(msg), btnRow)
-
-				successDlg := dialog.NewCustomWithoutButtons(
-					i18n.T("record_done_title"),
-					successContent,
-					a.window,
-				)
-				closeBtn.OnTapped = func() { successDlg.Hide() }
-				successDlg.Show()
+				// Show in Kayıtlarım drawer with highlight
+				a.showRecordingsDrawerWithHighlight(actualPatientDir)
 			})
 		}()
 		return
@@ -1722,16 +1732,12 @@ func (a *App) stopRecording() {
 		fyne.Do(func() {
 			progress.Hide()
 			
-			// Start fast single-pass grid processing
+			// Start fast single-pass grid processing as a toast popup
 			progressBar := widget.NewProgressBar()
 			progressLabel := widget.NewLabel(i18n.T("record_processing"))
 			progressContent := container.NewVBox(progressLabel, progressBar)
-			progressDlg := dialog.NewCustomWithoutButtons(
-				i18n.T("record_processing"),
-				progressContent,
-				a.window,
-			)
-			progressDlg.Show()
+			progressToast := a.NewToastProgress(i18n.T("record_processing"), progressContent)
+			progressToast.Show()
 
 			go func() {
 				ctx := context.Background()
@@ -1782,7 +1788,7 @@ func (a *App) stopRecording() {
 				}
 
 				fyne.Do(func() {
-					progressDlg.Hide()
+					progressToast.Hide()
 
 					if result.Err != nil {
 						detailedErr := fmt.Errorf("Genel video oluşturulamadı: %v", result.Err)
@@ -1790,28 +1796,11 @@ func (a *App) stopRecording() {
 						return
 					}
 
-					// Show success dialog with Open Folder option
-					msg := "Kayıt tamamlandı!\nGenel video hazırlandı. Bireysel kameralar arka planda işleniyor."
-					openBtn := widget.NewButtonWithIcon(i18n.T("record_done_open"), theme.FolderOpenIcon(), func() {
-						openPath(actualPatientDir)
-					})
-					openBtn.Importance = widget.HighImportance
-					closeBtn := widget.NewButton(i18n.T("record_done_close"), nil)
+					// Send OS notification instead of blocking dialog
+					a.sendOSNotification(i18n.T("record_done_title"), i18n.T("record_saved_notification"))
 
-					content := container.NewVBox(
-						widget.NewLabel(msg),
-						container.NewHBox(layout.NewSpacer(), openBtn, closeBtn),
-					)
-
-					successDlg := dialog.NewCustomWithoutButtons(
-						i18n.T("record_done_title"),
-						content,
-						a.window,
-					)
-					closeBtn.OnTapped = func() {
-						successDlg.Hide()
-					}
-					successDlg.Show()
+					// Show in Kayıtlarım drawer with highlight
+					a.showRecordingsDrawerWithHighlight(actualPatientDir)
 				})
 			}()
 		})
@@ -1866,18 +1855,18 @@ func (a *App) showPatientNameDialogForRecording(cameras []stream.CameraRecording
 	nameEntry := widget.NewEntry()
 	nameEntry.SetPlaceHolder(i18n.T("record_patient_placeholder"))
 	
-	tcEntry := widget.NewEntry()
-	tcEntry.SetPlaceHolder("TC Kimlik No (Opsiyonel)")
+	patientIDEntry := widget.NewEntry()
+	patientIDEntry.SetPlaceHolder(i18n.T("record_patient_id_placeholder"))
 	
 	historyEntry := widget.NewMultiLineEntry()
-	historyEntry.SetPlaceHolder("Hasta Hikayesi (Opsiyonel)")
+	historyEntry.SetPlaceHolder(i18n.T("record_patient_history_placeholder"))
 	historyEntry.SetMinRowsVisible(3)
 
 	// Pre-fill fields from cache if valid
-	cachedName, cachedTc, cachedHistory, cachedDir, _, cacheValid := a.patientCache.Get()
+	cachedName, cachedPatientID, cachedHistory, cachedDir, _, cacheValid := a.patientCache.Get()
 	if cacheValid {
 		nameEntry.Text = cachedName
-		tcEntry.Text = cachedTc
+		patientIDEntry.Text = cachedPatientID
 		historyEntry.Text = cachedHistory
 	}
 
@@ -1887,22 +1876,22 @@ func (a *App) showPatientNameDialogForRecording(cameras []stream.CameraRecording
 		i18n.T("btn_cancel"),
 		[]*widget.FormItem{
 			widget.NewFormItem(i18n.T("record_patient_label"), nameEntry),
-			widget.NewFormItem("TC Kimlik", tcEntry),
-			widget.NewFormItem("Hikaye", historyEntry),
+			widget.NewFormItem(i18n.T("record_patient_id_label"), patientIDEntry),
+			widget.NewFormItem(i18n.T("record_patient_history_label"), historyEntry),
 		},
 		func(ok bool) {
 			if !ok {
 				return
 			}
 			patientName := strings.TrimSpace(nameEntry.Text)
-			tc := strings.TrimSpace(tcEntry.Text)
+			patientID := strings.TrimSpace(patientIDEntry.Text)
 			history := strings.TrimSpace(historyEntry.Text)
 
 			var outDir string
 			var recordTag string
 
 			// If cache is valid and user did not change any info, reuse the directory and increment record count
-			if cacheValid && patientName == cachedName && tc == cachedTc && history == cachedHistory {
+			if cacheValid && patientName == cachedName && patientID == cachedPatientID && history == cachedHistory {
 				outDir = cachedDir
 				count := a.patientCache.IncrementRecordCount()
 				recordTag = fmt.Sprintf("_REC%02d", count)
@@ -1913,14 +1902,15 @@ func (a *App) showPatientNameDialogForRecording(cameras []stream.CameraRecording
 					dialog.ShowError(fmt.Errorf("failed to create output directory: %w", err), a.window)
 					return
 				}
-				a.patientCache.Store(patientName, tc, history, outDir)
+				a.patientCache.Store(patientName, patientID, history, outDir)
 				recordTag = "_REC01"
 			}
 			
 			// Create PatientInfo
 			info := stream.PatientInfo{
 				Name:           patientName,
-				TC:             tc,
+				PatientID:      patientID,
+				TC:             patientID, // For backwards compatibility
 				PatientHistory: history,
 				RecordDate:     time.Now(),
 			}
@@ -2310,6 +2300,235 @@ func (a *App) toggleLayoutDrawer() {
 	a.window.Content().Refresh()
 }
 
+// --- Recordings Drawer (Kayıtlarım) ---
+
+func (a *App) buildRecordingsDrawer() {
+	drawerBg := canvas.NewRectangle(colorCardSurface)
+
+	drawerSpacer := canvas.NewRectangle(color.Transparent)
+	drawerSpacer.SetMinSize(fyne.NewSize(280, 0))
+
+	// Title
+	titleLabel := canvas.NewText(i18n.T("btn_recordings"), colorTextPrimary)
+	titleLabel.TextSize = 15
+	titleLabel.TextStyle = fyne.TextStyle{Bold: true}
+
+	closeBtn := widget.NewButtonWithIcon("", theme.CancelIcon(), func() {
+		a.toggleRecordingsDrawer()
+	})
+	closeBtn.Importance = widget.LowImportance
+
+	header := container.NewBorder(nil, nil, nil, closeBtn, container.NewPadded(titleLabel))
+
+	a.recordingsListContainer = container.NewVBox()
+	scroll := container.NewVScroll(a.recordingsListContainer)
+
+	drawerContent := container.NewBorder(
+		container.NewVBox(header, widget.NewSeparator()),
+		nil,
+		nil, nil,
+		scroll,
+	)
+
+	a.recordingsDrawerPanel = container.NewStack(drawerBg, drawerSpacer, drawerContent)
+	a.recordingsDrawerPanel.Hide()
+	a.recordingsDrawerVisible = false
+}
+
+func (a *App) toggleRecordingsDrawer() {
+	a.mu.Lock()
+	a.recordingsDrawerVisible = !a.recordingsDrawerVisible
+	visible := a.recordingsDrawerVisible
+	a.mu.Unlock()
+
+	if visible {
+		go a.refreshRecordingsList()
+		a.recordingsDrawerPanel.Show()
+	} else {
+		a.recordingsDrawerPanel.Hide()
+	}
+	a.window.Content().Refresh()
+}
+
+type recordingEntry struct {
+	Name         string
+	Date         time.Time
+	ManeuverCount int
+	Dir          string
+}
+
+func (a *App) refreshRecordingsList() {
+	a.mu.Lock()
+	recDir := a.cfg.RecordingsDir
+	a.mu.Unlock()
+
+	entries, err := os.ReadDir(recDir)
+	if err != nil {
+		fyne.Do(func() {
+			a.recordingsListContainer.Objects = nil
+			emptyLabel := widget.NewLabel(i18n.T("recordings_empty"))
+			emptyLabel.Alignment = fyne.TextAlignCenter
+			a.recordingsListContainer.Add(emptyLabel)
+			a.recordingsListContainer.Refresh()
+		})
+		return
+	}
+
+	var recordings []recordingEntry
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		dirPath := filepath.Join(recDir, entry.Name())
+		info, err := stream.LoadPatientInfo(dirPath)
+		if err != nil {
+			continue
+		}
+
+		// Count maneuvers: number of "general" type videos
+		maneuverCount := 0
+		for _, v := range info.Videos {
+			if v.Type == "general" {
+				maneuverCount++
+			}
+		}
+		if maneuverCount == 0 {
+			maneuverCount = 1 // At least 1 if patient_info exists
+		}
+
+		recordings = append(recordings, recordingEntry{
+			Name:          info.Name,
+			Date:          info.RecordDate,
+			ManeuverCount: maneuverCount,
+			Dir:           dirPath,
+		})
+	}
+
+	// Sort by date, newest first
+	sort.Slice(recordings, func(i, j int) bool {
+		return recordings[i].Date.After(recordings[j].Date)
+	})
+
+	// Limit to 50
+	if len(recordings) > 50 {
+		recordings = recordings[:50]
+	}
+
+	fyne.Do(func() {
+		a.recordingsListContainer.Objects = nil
+
+		if len(recordings) == 0 {
+			emptyLabel := widget.NewLabel(i18n.T("recordings_empty"))
+			emptyLabel.Alignment = fyne.TextAlignCenter
+			a.recordingsListContainer.Add(emptyLabel)
+			a.recordingsListContainer.Refresh()
+			return
+		}
+
+		for _, rec := range recordings {
+			recDir := rec.Dir
+
+			nameText := canvas.NewText(rec.Name, colorTextPrimary)
+			nameText.TextSize = 12
+			nameText.TextStyle = fyne.TextStyle{Bold: true}
+			if rec.Name == "" {
+				nameText.Text = "—"
+			}
+
+			dateStr := rec.Date.Format("02.01.2006 15:04")
+			infoStr := fmt.Sprintf("%s - %s", dateStr, fmt.Sprintf(i18n.T("recordings_maneuver_count"), rec.ManeuverCount))
+			infoText := canvas.NewText(infoStr, colorTextSecondary)
+			infoText.TextSize = 10
+
+			textCol := container.NewVBox(nameText, infoText)
+
+			openBtn := widget.NewButtonWithIcon("", theme.FolderOpenIcon(), func() {
+				openPath(recDir)
+			})
+			openBtn.Importance = widget.LowImportance
+
+			itemContent := container.NewBorder(nil, nil, nil, openBtn, container.NewPadded(textCol))
+
+			itemBg := canvas.NewRectangle(colorInputSurface)
+			itemBg.CornerRadius = 6
+
+			itemCard := container.NewStack(itemBg, container.NewPadded(itemContent))
+
+			a.recordingsListContainer.Add(itemCard)
+		}
+		a.recordingsListContainer.Refresh()
+	})
+}
+
+func (a *App) showRecordingsDrawerWithHighlight(patientDir string) {
+	a.mu.Lock()
+	wasVisible := a.recordingsDrawerVisible
+	a.recordingsDrawerVisible = true
+	a.mu.Unlock()
+
+	// Refresh list first, then show drawer, then highlight
+	go func() {
+		a.refreshRecordingsList()
+
+		fyne.Do(func() {
+			if !wasVisible {
+				a.recordingsDrawerPanel.Show()
+				a.window.Content().Refresh()
+			}
+
+			// Find the matching item and blink it
+			a.blinkRecordingItem(patientDir)
+		})
+	}()
+}
+
+func (a *App) blinkRecordingItem(patientDir string) {
+	if a.recordingsListContainer == nil {
+		return
+	}
+
+	// Find the card that matches the patient dir
+	// Each item is a Stack(itemBg, Padded(itemContent))
+	// We find it by searching items with matching dir
+	a.mu.Lock()
+	recDir := a.cfg.RecordingsDir
+	a.mu.Unlock()
+
+	targetBase := filepath.Base(patientDir)
+	targetFull := filepath.Join(recDir, targetBase)
+	_ = targetFull
+
+	// Search through list items to find matching background rect
+	for _, obj := range a.recordingsListContainer.Objects {
+		if stack, ok := obj.(*fyne.Container); ok && len(stack.Objects) >= 1 {
+			if bg, ok := stack.Objects[0].(*canvas.Rectangle); ok {
+				// We need to identify the correct item. Since items are in order
+				// and we just refreshed, we try to match by checking the patient dir.
+				// Use the text content to match the name.
+				highlightBg := bg
+				go func() {
+					normalColor := colorInputSurface
+					highlightColor := color.NRGBA{R: 243, G: 156, B: 18, A: 200} // Amber
+
+					for i := 0; i < 3; i++ {
+						fyne.Do(func() {
+							highlightBg.FillColor = highlightColor
+							highlightBg.Refresh()
+						})
+						time.Sleep(300 * time.Millisecond)
+						fyne.Do(func() {
+							highlightBg.FillColor = normalColor
+							highlightBg.Refresh()
+						})
+						time.Sleep(300 * time.Millisecond)
+					}
+				}()
+				return // Blink only the first (newest) item, which matches after refresh
+			}
+		}
+	}
+}
+
 func (a *App) loadLayoutByName(name string) {
 	if a.blockWhileRecording() {
 		return
@@ -2403,9 +2622,6 @@ func (a *App) deleteLayoutByName(name string) {
 }
 
 func (a *App) showSaveLayoutDialog() {
-	if a.blockWhileRecording() {
-		return
-	}
 	nameEntry := widget.NewEntry()
 	nameEntry.SetPlaceHolder(i18n.T("layout_name_placeholder"))
 

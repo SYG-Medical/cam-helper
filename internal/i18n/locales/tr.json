@@ -1,8 +1,8 @@
 {
   "btn_add_camera": "Kamera Ekle",
   "btn_remove_camera": "Kamera Sil",
-  "btn_start_all": "Tümünü Başlat",
-  "btn_stop_all": "Tümünü Durdur",
+  "btn_start_all": "Kameraları Başlat",
+  "btn_stop_all": "Kameraları Durdur",
   "btn_record": "Kayıt",
   "btn_stop": "Durdur",
   "btn_stop_with_time": "Durdur (%s)",
@@ -131,7 +131,7 @@
   "lbl_in_use": "Kamera Kullanımda / Bağlantı Yok",
   "lbl_not_found": "Kamera Bulunamadı",
   "lbl_error": "Hata Oluştu",
-  "btn_layouts": "Düzenler",
+  "btn_layouts": "Sahneler",
   "layout_delete_confirm_title": "Düzeni Sil",
   "layout_delete_confirm_msg": "%q düzenini silmek istediğinize emin misiniz?",
   "tutorial_title_5": "Kamera Düzenleri (Layouts)",
@@ -147,5 +147,13 @@
   "lbl_composite_off_desc": "Her kamera ayrı ayrı kaydedilir. Kaydı durdurduğunuzda videolar birleştirilerek oluşturulur; bu işlem cihaza ve kayıt süresine bağlı olarak uzun sürebilir.\n\n• Her kamera için ayrı çözünürlük ve FPS seçilebilir\n• Güçlü donanım gerektirir\n• Kayıt sonrası işlem süresi uzun olabilir",
   "record_composite_done_msg": "Kayıt tamamlandı!\nVideo hazırlandı. Bireysel kamera videoları arka planda ayrıştırılıyor.",
   "perf_warning_msg": "Sistem Zorlanıyor: FPS %d'ye düşürüldü",
-  "msg_composite_format_disabled": "Anlık Kayıt modu açık olduğu için çözünürlük otomatik yönetilir. (Değiştirmek için Ayarlar'dan bu modu kapatın)"
+  "msg_composite_format_disabled": "Anlık Kayıt modu açık olduğu için çözünürlük otomatik yönetilir. (Değiştirmek için Ayarlar'dan bu modu kapatın)",
+  "record_patient_id_label": "Hasta No:",
+  "record_patient_id_placeholder": "Hasta No (Opsiyonel)",
+  "record_patient_history_label": "Not:",
+  "record_patient_history_placeholder": "Not (Opsiyonel)",
+  "btn_recordings": "Kayıtlarım",
+  "recordings_empty": "Henüz kayıt bulunmuyor.",
+  "recordings_maneuver_count": "%d manevra",
+  "record_saved_notification": "Kayıt kaydedildi."
 }

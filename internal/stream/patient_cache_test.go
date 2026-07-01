@@ -18,12 +18,12 @@ func TestPatientCacheBasic(t *testing.T) {
 	pc.Store("Ahmet", "12345678901", "Nystagmus history", "/path/to/Ahmet_20260630")
 
 	// Get data
-	name, tc, history, dir, count, valid := pc.Get()
+	name, patientID, history, dir, count, valid := pc.Get()
 	if !valid {
 		t.Fatal("expected cache to be valid")
 	}
-	if name != "Ahmet" || tc != "12345678901" || history != "Nystagmus history" || dir != "/path/to/Ahmet_20260630" || count != 1 {
-		t.Fatalf("unexpected cache values: %s, %s, %s, %s, %d", name, tc, history, dir, count)
+	if name != "Ahmet" || patientID != "12345678901" || history != "Nystagmus history" || dir != "/path/to/Ahmet_20260630" || count != 1 {
+		t.Fatalf("unexpected cache values: %s, %s, %s, %s, %d", name, patientID, history, dir, count)
 	}
 
 	// Increment record count

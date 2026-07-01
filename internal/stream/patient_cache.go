@@ -9,7 +9,7 @@ import (
 type PatientCache struct {
 	mu          sync.Mutex
 	name        string
-	tc          string
+	patientID   string
 	history     string
 	patientDir  string
 	recordCount int
@@ -25,11 +25,11 @@ func NewPatientCache(ttl time.Duration) *PatientCache {
 }
 
 // Store saves patient info and sets/resets the cache timer.
-func (pc *PatientCache) Store(name, tc, history, patientDir string) {
+func (pc *PatientCache) Store(name, patientID, history, patientDir string) {
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
 	pc.name = name
-	pc.tc = tc
+	pc.patientID = patientID
 	pc.history = history
 	pc.patientDir = patientDir
 	pc.recordCount = 1
@@ -37,13 +37,13 @@ func (pc *PatientCache) Store(name, tc, history, patientDir string) {
 }
 
 // Get returns the cached patient info if it has not expired.
-func (pc *PatientCache) Get() (name, tc, history, patientDir string, recordCount int, valid bool) {
+func (pc *PatientCache) Get() (name, patientID, history, patientDir string, recordCount int, valid bool) {
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
 	if pc.cachedAt.IsZero() || time.Since(pc.cachedAt) > pc.ttl {
 		return "", "", "", "", 0, false
 	}
-	return pc.name, pc.tc, pc.history, pc.patientDir, pc.recordCount, true
+	return pc.name, pc.patientID, pc.history, pc.patientDir, pc.recordCount, true
 }
 
 // IncrementRecordCount increments the recording session count and resets the TTL expiration timer.
@@ -60,7 +60,7 @@ func (pc *PatientCache) Invalidate() {
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
 	pc.name = ""
-	pc.tc = ""
+	pc.patientID = ""
 	pc.history = ""
 	pc.patientDir = ""
 	pc.recordCount = 0

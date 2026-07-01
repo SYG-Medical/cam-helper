@@ -13,7 +13,8 @@ const patientInfoFile = "patient_info.json"
 // PatientInfo holds metadata about a recording session's patient.
 type PatientInfo struct {
 	Name           string      `json:"name"`                      // Required
-	TC             string      `json:"tc,omitempty"`               // Optional — Turkish ID
+	PatientID      string      `json:"patient_id,omitempty"`       // Optional - Patient ID
+	TC             string      `json:"tc,omitempty"`               // Deprecated - kept for backwards compatibility
 	PatientHistory string      `json:"patient_history,omitempty"`  // Optional — brief patient note
 	RecordDate     time.Time   `json:"record_date"`
 	Duration       string      `json:"duration,omitempty"`         // Filled after processing
@@ -47,6 +48,9 @@ func LoadPatientInfo(dir string) (PatientInfo, error) {
 	var info PatientInfo
 	if err := json.Unmarshal(data, &info); err != nil {
 		return PatientInfo{}, fmt.Errorf("parse patient info: %w", err)
+	}
+	if info.PatientID == "" && info.TC != "" {
+		info.PatientID = info.TC
 	}
 	return info, nil
 }

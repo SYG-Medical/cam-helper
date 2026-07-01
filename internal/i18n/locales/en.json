@@ -1,8 +1,8 @@
 {
   "btn_add_camera": "Add Camera",
   "btn_remove_camera": "Remove Camera",
-  "btn_start_all": "Start All",
-  "btn_stop_all": "Stop All",
+  "btn_start_all": "Start Cameras",
+  "btn_stop_all": "Stop Cameras",
   "btn_record": "Record",
   "btn_stop": "Stop",
   "btn_stop_with_time": "Stop (%s)",
@@ -131,7 +131,7 @@
   "lbl_in_use": "Camera in Use / Disconnected",
   "lbl_not_found": "Camera Not Found",
   "lbl_error": "An Error Occurred",
-  "btn_layouts": "Layouts",
+  "btn_layouts": "Scenes",
   "layout_delete_confirm_title": "Delete Layout",
   "layout_delete_confirm_msg": "Are you sure you want to delete layout %q?",
   "tutorial_title_5": "Camera Layouts",
@@ -147,5 +147,13 @@
   "lbl_composite_off_desc": "Each camera is recorded separately. After recording stops, videos are processed and combined; this may take a while depending on your device and the recording length.\n\n• Custom resolution and FPS can be set per camera\n• Requires a powerful device\n• Post-recording processing time can be long",
   "record_composite_done_msg": "Recording complete!\nVideo is ready. Individual camera videos are being separated in the background.",
   "perf_warning_msg": "System Lag: FPS reduced to %d",
-  "msg_composite_format_disabled": "Resolution is managed automatically because Instant Recording Mode is on. (Turn it off in Settings to change this)"
+  "msg_composite_format_disabled": "Resolution is managed automatically because Instant Recording Mode is on. (Turn it off in Settings to change this)",
+  "record_patient_id_label": "Patient ID:",
+  "record_patient_id_placeholder": "Patient ID (Optional)",
+  "record_patient_history_label": "Note:",
+  "record_patient_history_placeholder": "Note (Optional)",
+  "btn_recordings": "My Recordings",
+  "recordings_empty": "No recordings yet.",
+  "recordings_maneuver_count": "%d maneuvers",
+  "record_saved_notification": "Recording saved."
 }
