@@ -173,5 +173,9 @@
   "err_min_environment": "En az 1 ortam kamerası gerekli.",
   "lbl_camera_role": "Kamera Türü",
   "lbl_eye_side": "Göz Tarafı",
-  "lbl_in_use_device": "[Kullanımda]"
+  "lbl_in_use_device": "[Kullanımda]",
+  "title_setup": "NystaVision Kurulum Sihirbazı",
+  "setup_welcome_title": "NystaVision'a Hoş Geldiniz!",
+  "setup_welcome_desc": "Uygulamayı kullanmaya başlamadan önce lütfen temel ayarları yapılandırın.",
+  "btn_complete_setup": "Kurulumu Tamamla"
 }

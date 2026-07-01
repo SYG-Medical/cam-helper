@@ -173,5 +173,9 @@
   "err_min_environment": "At least 1 environment camera is required.",
   "lbl_camera_role": "Camera Type",
   "lbl_eye_side": "Eye Side",
-  "lbl_in_use_device": "[In Use]"
+  "lbl_in_use_device": "[In Use]",
+  "title_setup": "NystaVision Setup Wizard",
+  "setup_welcome_title": "Welcome to NystaVision!",
+  "setup_welcome_desc": "Please configure the basic settings before starting to use NystaVision.",
+  "btn_complete_setup": "Complete Setup"
 }

@@ -165,5 +165,9 @@
   "err_min_environment": "مطلوبة كاميرا بيئية واحدة على الأقل.",
   "lbl_camera_role": "نوع الكاميرا",
   "lbl_eye_side": "جانب العين",
-  "lbl_in_use_device": "[قيد الاستخدام]"
+  "lbl_in_use_device": "[قيد الاستخدام]",
+  "title_setup": "معالج إعداد NystaVision",
+  "setup_welcome_title": "مرحباً بك في NystaVision!",
+  "setup_welcome_desc": "يرجى تهيئة الإعدادات الأساسية قبل بدء استخدام التطبيق.",
+  "btn_complete_setup": "إكمال الإعداد"
 }

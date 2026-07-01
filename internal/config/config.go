@@ -67,6 +67,7 @@ type Config struct {
 	LogLevel        string `json:"log_level"`
 	Language        string `json:"language"`
 	TutorialShown   bool   `json:"tutorial_shown"`
+	SetupCompleted  bool   `json:"setup_completed"`
 	RecordingsDir   string `json:"recordings_dir"`
 
 	// Deprecated driver fields — kept for backward compat, not written by Normalize
@@ -201,6 +202,9 @@ func LoadOrCreate() (Config, string, error) {
 	}
 	if cfg.Language == "" {
 		cfg.Language = detectSystemLanguage()
+	}
+	if !strings.Contains(string(data), "setup_completed") {
+		cfg.SetupCompleted = true
 	}
 
 	// Migrate legacy single-camera config: if "rtsp_url" is present and cameras is empty

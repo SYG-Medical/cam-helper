@@ -31,6 +31,17 @@ func BuildResizableCameraGrid(objects []fyne.CanvasObject, cols, rows int) fyne.
 		return layout.NewSpacer()
 	}
 
+	// Custom layout for exactly 3 cameras:
+	// Top row has objects[0] and objects[1] split horizontally.
+	// Bottom row has objects[2] spanning the full width.
+	if len(objects) == 3 {
+		topSplit := container.NewHSplit(objects[0], objects[1])
+		topSplit.Offset = 0.5
+		mainSplit := container.NewVSplit(topSplit, objects[2])
+		mainSplit.Offset = 0.5
+		return mainSplit
+	}
+
 	// Create each row as a horizontal split container
 	var rowContainers []fyne.CanvasObject
 	for r := 0; r < rows; r++ {

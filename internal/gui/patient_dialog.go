@@ -2,15 +2,16 @@ package gui
 
 import (
 	"fmt"
+	"image/color"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
-	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/widget"
 
 	"nystavision/internal/i18n"
@@ -34,8 +35,6 @@ func (a *App) showPatientInfoDrawerAfterRecording(session *stream.RecordingSessi
 		nameEntry.Text = cachedName
 		patientIDEntry.Text = cachedPatientID
 	}
-
-	var dlg dialog.Dialog
 
 	saveBtn := widget.NewButton("Kaydet / Devam", func() {
 		patientName := strings.TrimSpace(nameEntry.Text)
@@ -76,26 +75,54 @@ func (a *App) showPatientInfoDrawerAfterRecording(session *stream.RecordingSessi
 
 		actualTempDir := filepath.Dir(session.TempDir)
 
-		dlg.Hide()
+		// Restore list view in right drawer
+		a.showRecordingsListInDrawer()
 
 		a.postProcessRecording(session, compositeRec, actualTempDir, finalPatientDir, note)
 	})
 
 	saveBtn.Importance = widget.HighImportance
 
-	content := container.NewVBox(
-		widget.NewForm(
-			widget.NewFormItem(i18n.T("record_patient_label"), nameEntry),
-			widget.NewFormItem(i18n.T("record_patient_id_label"), patientIDEntry),
-			widget.NewFormItem(i18n.T("record_patient_history_label"), noteEntry),
-		),
+	// Form Title
+	titleLabel := canvas.NewText("Hasta Bilgileri", colorTextPrimary)
+	titleLabel.TextSize = 15
+	titleLabel.TextStyle = fyne.TextStyle{Bold: true}
+
+	formHeader := container.NewVBox(
+		container.NewPadded(titleLabel),
 		widget.NewSeparator(),
-		container.NewHBox(layout.NewSpacer(), saveBtn),
 	)
 
-	dlg = dialog.NewCustomWithoutButtons("Hasta Bilgileri", content, a.window)
-	dlg.Resize(fyne.NewSize(400, 350))
-	dlg.Show()
+	formContent := container.NewBorder(
+		formHeader,
+		container.NewVBox(widget.NewSeparator(), container.NewPadded(saveBtn)),
+		nil, nil,
+		container.NewVScroll(container.NewVBox(
+			widget.NewForm(
+				widget.NewFormItem(i18n.T("record_patient_label"), nameEntry),
+				widget.NewFormItem(i18n.T("record_patient_id_label"), patientIDEntry),
+				widget.NewFormItem(i18n.T("record_patient_history_label"), noteEntry),
+			),
+		)),
+	)
+
+	drawerBg := canvas.NewRectangle(colorCardSurface)
+	drawerSpacer := canvas.NewRectangle(color.Transparent)
+	drawerSpacer.SetMinSize(fyne.NewSize(280, 0))
+
+	a.mu.Lock()
+	a.recordingsDrawerVisible = true
+	a.mu.Unlock()
+
+	fyne.Do(func() {
+		a.recordingsDrawerPanel.RemoveAll()
+		a.recordingsDrawerPanel.Add(drawerBg)
+		a.recordingsDrawerPanel.Add(drawerSpacer)
+		a.recordingsDrawerPanel.Add(formContent)
+		a.recordingsDrawerPanel.Show()
+		a.recordingsDrawerPanel.Refresh()
+		a.window.Content().Refresh()
+	})
 }
 
 // showPatientInfoDialog shows a read-only summary of patient info, using Maneuvers.
@@ -125,7 +152,13 @@ func (a *App) showPatientInfoDialog(info stream.PatientInfo) {
 		}
 	}
 
-	dialog.ShowInformation("Hasta Bilgileri", details, a.window)
+	label := widget.NewLabel(details)
+	label.Wrapping = fyne.TextWrapWord
+	scroll := container.NewVScroll(label)
+	scroll.SetMinSize(fyne.NewSize(420, 320))
+
+	d := dialog.NewCustom("Hasta Bilgileri", "Kapat", scroll, a.window)
+	d.Show()
 }
 
 // showEditPatientDialog allows editing patient name, ID, and per-maneuver notes.
