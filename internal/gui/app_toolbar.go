@@ -6,11 +6,13 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
 	"nystavision/internal/config"
 	"nystavision/internal/i18n"
+	"nystavision/internal/ui"
 )
 
 func (a *App) buildToolbar() *fyne.Container {
@@ -63,7 +65,9 @@ func (a *App) buildToolbar() *fyne.Container {
 	middleGroup := container.NewHBox(a.startStopAllBtn, widget.NewSeparator(), a.recordBtn)
 	rightGroup := container.NewHBox(widget.NewSeparator(), settingsBtn, helpBtn, widget.NewSeparator(), a.recordingsBtn)
 
-	return container.NewBorder(nil, nil, leftGroup, rightGroup, container.NewCenter(middleGroup))
+	borderLayout := layout.NewBorderLayout(nil, nil, leftGroup, rightGroup)
+	overrideLayout := ui.NewMinSizeOverridingLayout(borderLayout, fyne.NewSize(100, 0))
+	return container.New(overrideLayout, leftGroup, rightGroup, container.NewCenter(middleGroup))
 }
 
 func (a *App) toggleAllStreams() {

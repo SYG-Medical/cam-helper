@@ -313,6 +313,7 @@ type recItemUI struct {
 	OpenBtn  *widget.Button
 	InfoBtn  *widget.Button
 	EditBtn  *widget.Button
+	Bg       *canvas.Rectangle
 }
 
 var (
@@ -378,6 +379,7 @@ func (a *App) buildRecordingsDrawer() {
 				OpenBtn:  openBtn,
 				InfoBtn:  infoBtn,
 				EditBtn:  editBtn,
+				Bg:       itemBg,
 			}
 			recordingListMu.Unlock()
 
@@ -390,6 +392,7 @@ func (a *App) buildRecordingsDrawer() {
 				return
 			}
 			rec := a.recordingsData[i]
+			highlighted := a.highlightedDir == rec.Dir
 			a.mu.Unlock()
 
 			recordingListMu.Lock()
@@ -399,6 +402,13 @@ func (a *App) buildRecordingsDrawer() {
 			if uiElems == nil {
 				return
 			}
+
+			if highlighted {
+				uiElems.Bg.FillColor = colorAmberWarning
+			} else {
+				uiElems.Bg.FillColor = colorInputSurface
+			}
+			uiElems.Bg.Refresh()
 
 			uiElems.NameText.Text = rec.Name
 			if uiElems.NameText.Text == "" {
@@ -600,6 +610,28 @@ func (a *App) showRecordingsDrawerWithHighlight(patientDir string) {
 }
 
 func (a *App) blinkRecordingItem(patientDir string) {
-	// Blinking animation disabled: Fyne layout engine freezes when refreshing
-	// multiple containers simultaneously, causing severe UI lags.
+	if a.recordingsList == nil {
+		return
+	}
+
+	go func() {
+		// Blink 3 times: toggle highlightedDir on/off and refresh list
+		for i := 0; i < 3; i++ {
+			a.mu.Lock()
+			a.highlightedDir = patientDir
+			a.mu.Unlock()
+			fyne.Do(func() {
+				a.recordingsList.Refresh()
+			})
+			time.Sleep(350 * time.Millisecond)
+
+			a.mu.Lock()
+			a.highlightedDir = ""
+			a.mu.Unlock()
+			fyne.Do(func() {
+				a.recordingsList.Refresh()
+			})
+			time.Sleep(350 * time.Millisecond)
+		}
+	}()
 }

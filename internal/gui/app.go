@@ -106,6 +106,7 @@ type App struct {
 	recordingsList          *widget.List
 	recordingsData          []recordingEntry
 	recordingsDrawerVisible bool
+	highlightedDir          string
 	recordingsBtn           *widget.Button
 
 	// Views containers for layout draw swapping

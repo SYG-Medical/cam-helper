@@ -116,3 +116,33 @@ func buildVSplitRecursive(rows []fyne.CanvasObject) fyne.CanvasObject {
 	return split
 }
 
+// MinSizeOverridingLayout wraps an existing layout but overrides its MinSize.
+type MinSizeOverridingLayout struct {
+	Delegate   fyne.Layout
+	MinSizeVal fyne.Size
+}
+
+func NewMinSizeOverridingLayout(delegate fyne.Layout, minSize fyne.Size) fyne.Layout {
+	return &MinSizeOverridingLayout{
+		Delegate:   delegate,
+		MinSizeVal: minSize,
+	}
+}
+
+func (l *MinSizeOverridingLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) {
+	l.Delegate.Layout(objects, size)
+}
+
+func (l *MinSizeOverridingLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
+	dSize := l.Delegate.MinSize(objects)
+	w := l.MinSizeVal.Width
+	if w <= 0 {
+		w = dSize.Width
+	}
+	h := l.MinSizeVal.Height
+	if h <= 0 {
+		h = dSize.Height
+	}
+	return fyne.NewSize(w, h)
+}
+
