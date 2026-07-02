@@ -478,7 +478,6 @@ func (a *App) showEditCameraDialog(cameraID string) {
 					}
 
 					a.mu.Lock()
-					defer a.mu.Unlock()
 
 					camPtr := &a.cfg.Cameras[selectedIdx]
 
@@ -535,9 +534,17 @@ func (a *App) showEditCameraDialog(cameraID string) {
 
 					a.translateCameraNames()
 					_ = config.Save(*a.cfg, a.cfgPath)
-					a.multiManager.UpdateCamera(*camPtr)
+
+					// Copy values for thread-safe async processing
+					camCopy := *camPtr
+					a.mu.Unlock()
+
+					go func() {
+						_ = a.multiManager.UpdateCamera(camCopy)
+					}()
+
 					if panel, exists := a.cameraPanels[cameraID]; exists {
-						panel.SetName(camPtr.Name)
+						panel.SetName(camCopy.Name)
 					}
 				}, a.window)
 			d.Resize(fyne.NewSize(500, 450))
