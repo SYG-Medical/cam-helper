@@ -105,7 +105,7 @@
   "tutorial_title_0": "NystaVision'a Hoş Geldiniz!",
   "tutorial_desc_0": "NystaVision, birden fazla kamerayı aynı anda izlemenizi ve kaydetmenizi sağlar. Bu kısa tur, uygulamayı hızla öğrenmenize yardımcı olacak.",
   "tutorial_title_1": "Kamera Ekleme",
-  "tutorial_desc_1": "+ butonuna tıklayarak yeni kamera ekleyebilirsiniz. IP kamera (RTSP) veya USB webcam desteklenir.",
+  "tutorial_desc_1": "+ butonuna tıklayarak yeni kamera ekleyebilirsiniz. IP kamera veya USB webcam desteklenir.",
   "tutorial_title_2": "Kameraları Başlatma",
   "tutorial_desc_2": "\"Tümünü Başlat\" butonu tüm aktif kameraları aynı anda başlatır. Kameranın üzerine sağ tıklayarak tek kameraları yönetebilirsiniz.",
   "tutorial_title_3": "Kayıt",
@@ -177,5 +177,9 @@
   "title_setup": "NystaVision Kurulum Sihirbazı",
   "setup_welcome_title": "NystaVision'a Hoş Geldiniz!",
   "setup_welcome_desc": "Uygulamayı kullanmaya başlamadan önce lütfen temel ayarları yapılandırın.",
-  "btn_complete_setup": "Kurulumu Tamamla"
+  "btn_complete_setup": "Kurulumu Tamamla",
+  "about_title": "Hakkında",
+  "about_close": "Kapat",
+  "about_replay_tutorial": "Eğiticiyi Tekrar Oynat",
+  "about_desc": "NystaVision, SYG Medical tarafından geliştirilmiş profesyonel bir kamera kayıt sistemidir. Tüm hakları saklıdır © 2026."
 }

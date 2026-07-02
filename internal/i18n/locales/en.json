@@ -105,7 +105,7 @@
   "tutorial_title_0": "Welcome to NystaVision!",
   "tutorial_desc_0": "NystaVision lets you monitor and record multiple cameras simultaneously. This short tour will help you get started quickly.",
   "tutorial_title_1": "Adding Cameras",
-  "tutorial_desc_1": "Click the + button to add a new camera. Both IP cameras (RTSP) and USB webcams are supported.",
+  "tutorial_desc_1": "Click the + button to add a new camera. Both IP cameras and USB webcams are supported.",
   "tutorial_title_2": "Starting Cameras",
   "tutorial_desc_2": "The \"Start All\" button starts all active cameras simultaneously. Right-click on a camera to manage individual cameras.",
   "tutorial_title_3": "Recording",
@@ -177,5 +177,9 @@
   "title_setup": "NystaVision Setup Wizard",
   "setup_welcome_title": "Welcome to NystaVision!",
   "setup_welcome_desc": "Please configure the basic settings before starting to use NystaVision.",
-  "btn_complete_setup": "Complete Setup"
+  "btn_complete_setup": "Complete Setup",
+  "about_title": "About",
+  "about_close": "Close",
+  "about_replay_tutorial": "Replay Tutorial",
+  "about_desc": "NystaVision is a professional camera recording system developed by SYG Medical. All rights reserved © 2026."
 }

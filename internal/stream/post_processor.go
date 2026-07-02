@@ -700,6 +700,10 @@ func sanitizeFilename(name string) string {
 	return result
 }
 
+func SanitizeFilename(name string) string {
+	return sanitizeFilename(name)
+}
+
 func (p *PostProcessor) renderGeneralFromSegments(
 	ctx context.Context,
 	session RecordingSessionSnapshot,

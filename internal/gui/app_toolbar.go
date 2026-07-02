@@ -57,7 +57,7 @@ func (a *App) buildToolbar() *fyne.Container {
 
 	// Help/Tutorial button
 	helpBtn := widget.NewButtonWithIcon("", theme.QuestionIcon(), func() {
-		a.showTutorial()
+		a.showAboutDialog()
 	})
 
 	// Layout: [Sahneler] | [+ Ekle] [- Sil] | [▶ Tümünü Başlat] [⏺ Kayıt] | [⚙] [?] | [Kayıtlarım]

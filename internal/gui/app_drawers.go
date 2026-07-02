@@ -434,11 +434,12 @@ func (a *App) buildRecordingsDrawer() {
 			uiElems.EditBtn.OnTapped = func() {
 				info, err := stream.LoadPatientInfo(recDir)
 				if err == nil {
-					a.showEditPatientDialog(recDir, info, func(updated stream.PatientInfo) {
+					a.showEditPatientDialog(recDir, info, func(updated stream.PatientInfo, newDir string) {
 						a.mu.Lock()
 						for idx := range a.recordingsData {
 							if a.recordingsData[idx].Dir == recDir {
 								a.recordingsData[idx].Name = updated.Name
+								a.recordingsData[idx].Dir = newDir
 								break
 							}
 						}

@@ -102,7 +102,7 @@
   "tutorial_title_0": "مرحباً بك في NystaVision!",
   "tutorial_desc_0": "يتيح لك NystaVision مراقبة وتسجيل كاميرات متعددة في وقت واحد. ستساعدك هذه الجولة القصيرة على البدء بسرعة.",
   "tutorial_title_1": "إضافة الكاميرات",
-  "tutorial_desc_1": "انقر على زر + لإضافة كاميرا جديدة. يتم دعم كاميرات IP (RTSP) وكاميرات USB.",
+  "tutorial_desc_1": "انقر على زر + لإضافة كاميرا جديدة. يتم دعم كاميرات IP وكاميرات USB.",
   "tutorial_title_2": "تشغيل الكاميرات",
   "tutorial_desc_2": "يؤدي زر \"بدء الكل\" إلى تشغيل جميع الكاميرات النشطة في وقت واحد. انقر بزر الماوس الأيمن على كاميرا لإدارتها بشكل فردي.",
   "tutorial_title_3": "التسجيل",
@@ -169,5 +169,9 @@
   "title_setup": "معالج إعداد NystaVision",
   "setup_welcome_title": "مرحباً بك في NystaVision!",
   "setup_welcome_desc": "يرجى تهيئة الإعدادات الأساسية قبل بدء استخدام التطبيق.",
-  "btn_complete_setup": "إكمال الإعداد"
+  "btn_complete_setup": "إكمال الإعداد",
+  "about_title": "حول",
+  "about_close": "إغلاق",
+  "about_replay_tutorial": "إعادة تشغيل البرنامج التعليمي",
+  "about_desc": "NystaVision هو نظام احترافي لتسجيل الكاميرات تم تطويره بواسطة SYG Medical. جميع الحقوق محفوظة © 2026."
 }

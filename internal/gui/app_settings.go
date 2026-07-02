@@ -5,7 +5,6 @@ import (
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
-	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
@@ -74,19 +73,13 @@ func (a *App) showSettingsDialog() {
 		a.reloadUI()
 	}
 
-	configBtn := widget.NewButtonWithIcon(i18n.T("btn_open_config"), theme.SettingsIcon(), func() {
-		system.OpenPath(a.cfgPath)
-	})
-
 	logsBtn := widget.NewButtonWithIcon(i18n.T("btn_show_logs"), theme.FolderOpenIcon(), func() {
 		if logDir, err := config.LogsDir(); err == nil {
 			system.OpenPath(logDir)
 		}
 	})
 
-	versionText := canvas.NewText(i18n.T("lbl_version", version.Version), theme.DisabledColor())
-	versionText.TextSize = theme.CaptionTextSize()
-	versionText.Alignment = fyne.TextAlignTrailing
+
 
 	recordingsDirEntry := widget.NewEntry()
 	recordingsDirEntry.SetText(a.cfg.RecordingsDir)
@@ -140,8 +133,7 @@ func (a *App) showSettingsDialog() {
 		widget.NewSeparator(),
 		compositeGroup,
 		widget.NewSeparator(),
-		container.NewGridWithColumns(2, configBtn, logsBtn),
-		container.NewHBox(layout.NewSpacer(), versionText),
+		container.NewPadded(logsBtn),
 	))
 	settingsContent.SetMinSize(fyne.NewSize(500, 400))
 
@@ -248,6 +240,10 @@ func (a *App) showTutorial() {
 	}
 	a.mu.Unlock()
 
+	if a.blockWhileRecording() {
+		return
+	}
+
 	steps := []ui.TutorialStep{
 		{TargetWidget: nil, TitleKey: "tutorial_title_0", DescKey: "tutorial_desc_0"},
 		{TargetWidget: a.addBtn, TitleKey: "tutorial_title_1", DescKey: "tutorial_desc_1"},
@@ -269,6 +265,41 @@ func (a *App) showTutorial() {
 			a.settingsDialog = nil
 		}
 	})
+}
+
+func (a *App) showAboutDialog() {
+	var d dialog.Dialog
+
+	title := widget.NewLabelWithStyle("NystaVision", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
+	// title.TextSize doesn't work directly on widget.Label but we can use header styles if needed, leaving default is fine.
+
+	versionText := canvas.NewText(i18n.T("lbl_version", version.Version), theme.DisabledColor())
+	versionText.TextSize = theme.CaptionTextSize()
+	versionText.Alignment = fyne.TextAlignCenter
+
+	desc := widget.NewLabel(i18n.T("about_desc"))
+	desc.Wrapping = fyne.TextWrapWord
+	desc.Alignment = fyne.TextAlignCenter
+
+	content := container.NewVBox(
+		title,
+		versionText,
+		widget.NewSeparator(),
+		desc,
+		widget.NewSeparator(),
+		widget.NewButtonWithIcon(i18n.T("about_replay_tutorial"), theme.HelpIcon(), func() {
+			if d != nil {
+				d.Hide()
+			}
+			a.showTutorial()
+		}),
+	)
+	
+	// Add padding/size
+	paddedContent := container.NewPadded(content)
+	
+	d = dialog.NewCustom(i18n.T("about_title"), i18n.T("about_close"), paddedContent, a.window)
+	d.Show()
 }
 
 func (a *App) setMainButtonsEnabled(enabled bool) {

@@ -162,7 +162,7 @@ func (a *App) showPatientInfoDialog(info stream.PatientInfo) {
 }
 
 // showEditPatientDialog allows editing patient name, ID, and per-maneuver notes.
-func (a *App) showEditPatientDialog(dir string, info stream.PatientInfo, onSaved func(updated stream.PatientInfo)) {
+func (a *App) showEditPatientDialog(dir string, info stream.PatientInfo, onSaved func(updated stream.PatientInfo, newDir string)) {
 	nameEntry := widget.NewEntry()
 	nameEntry.SetText(info.Name)
 
@@ -221,6 +221,10 @@ func (a *App) showEditPatientDialog(dir string, info stream.PatientInfo, onSaved
 		if !ok {
 			return
 		}
+		
+		oldDir := dir
+		originalName := info.Name
+		
 		info.Name = strings.TrimSpace(nameEntry.Text)
 		info.PatientID = strings.TrimSpace(patientIDEntry.Text)
 
@@ -242,11 +246,35 @@ func (a *App) showEditPatientDialog(dir string, info stream.PatientInfo, onSaved
 			}
 		}
 
+		newDir := oldDir
+		if info.Name != originalName && info.Name != "" {
+			oldBase := filepath.Base(oldDir)
+			parts := strings.Split(oldBase, "_")
+			suffix := ""
+			if len(parts) >= 2 {
+				suffix = "_" + strings.Join(parts[1:], "_")
+			} else {
+				suffix = "_" + info.RecordDate.Format("20060102")
+			}
+			safeNewName := stream.SanitizeFilename(info.Name)
+			if safeNewName == "" {
+				safeNewName = "isimsiz"
+			}
+			newDir = filepath.Join(filepath.Dir(oldDir), safeNewName+suffix)
+			if newDir != oldDir {
+				if err := os.Rename(oldDir, newDir); err == nil {
+					dir = newDir
+				} else {
+					newDir = oldDir
+				}
+			}
+		}
+
 		if err := stream.SavePatientInfo(dir, info); err != nil {
 			dialog.ShowError(err, a.window)
 		} else {
 			if onSaved != nil {
-				onSaved(info)
+				onSaved(info, newDir)
 			}
 		}
 	}, a.window)

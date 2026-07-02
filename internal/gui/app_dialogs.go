@@ -88,8 +88,8 @@ func (a *App) showAddCameraDialog() {
 			}
 
 			// ── Source Type ───────────────────────────────────────────────
-			sourceType := widget.NewSelect([]string{"IP", "Webcam"}, nil)
-			sourceType.SetSelected("IP")
+			sourceType := widget.NewSelect([]string{"IP Kamera", "Webcam"}, nil)
+			sourceType.SetSelected("IP Kamera")
 
 			urlEntry := widget.NewEntry()
 			urlEntry.SetPlaceHolder(i18n.T("placeholder_url"))
@@ -126,7 +126,7 @@ func (a *App) showAddCameraDialog() {
 			webcamSelect.Hide()
 
 			sourceType.OnChanged = func(s string) {
-				if s == "IP" {
+				if s == "IP Kamera" {
 					urlEntry.Show()
 					webcamSelect.Hide()
 				} else {
@@ -172,7 +172,7 @@ func (a *App) showAddCameraDialog() {
 						}
 					}
 
-					if sourceType.Selected == "IP" {
+					if sourceType.Selected == "IP Kamera" {
 						hasRTSP := false
 						for _, c := range a.cfg.Cameras {
 							if c.Type == "rtsp" && c.Enabled {
@@ -196,7 +196,7 @@ func (a *App) showAddCameraDialog() {
 						EyeSide:    camEyeSide,
 					}
 
-					if sourceType.Selected == "IP" {
+					if sourceType.Selected == "IP Kamera" {
 						cam.Type = "rtsp"
 						cam.RTSPURL = strings.TrimSpace(urlEntry.Text)
 					} else {
@@ -307,8 +307,12 @@ func (a *App) showEditCameraDialog(cameraID string) {
 				}
 			}
 
-			typeSelect := widget.NewSelect([]string{"rtsp", "webcam"}, nil)
-			typeSelect.SetSelected(selectedCam.Type)
+			typeSelect := widget.NewSelect([]string{"IP Kamera", "Webcam"}, nil)
+			if selectedCam.Type == "rtsp" {
+				typeSelect.SetSelected("IP Kamera")
+			} else {
+				typeSelect.SetSelected("Webcam")
+			}
 
 			urlEntry := widget.NewEntry()
 			urlEntry.Text = selectedCam.RTSPURL
@@ -435,7 +439,7 @@ func (a *App) showEditCameraDialog(cameraID string) {
 			}
 
 			typeSelect.OnChanged = func(s string) {
-				if s == "rtsp" {
+				if s == "IP Kamera" {
 					urlEntry.Show()
 					webcamSelect.Hide()
 					formatAccordion.Hide()
@@ -495,7 +499,11 @@ func (a *App) showEditCameraDialog(cameraID string) {
 					camPtr.CameraRole = camRole
 					camPtr.EyeSide = camEyeSide
 
-					camPtr.Type = typeSelect.Selected
+					if typeSelect.Selected == "IP Kamera" {
+						camPtr.Type = "rtsp"
+					} else {
+						camPtr.Type = "webcam"
+					}
 					camPtr.RTSPURL = strings.TrimSpace(urlEntry.Text)
 					if camPtr.Type == "webcam" {
 						camPtr.Device = wcDevMap[webcamSelect.Selected]
