@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/widget"
 )
@@ -16,12 +17,12 @@ type PTZButton struct {
 
 // NewPTZButton creates a PTZButton that calls onPress on mouse-down and
 // onRelease on mouse-up.
-func NewPTZButton(label string, onPress, onRelease func()) *PTZButton {
+func NewPTZButton(icon fyne.Resource, onPress, onRelease func()) *PTZButton {
 	b := &PTZButton{
 		OnPress:   onPress,
 		OnRelease: onRelease,
 	}
-	b.Text = label
+	b.Icon = icon
 	b.ExtendBaseWidget(b)
 	return b
 }

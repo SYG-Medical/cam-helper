@@ -10,6 +10,7 @@ import (
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/layout"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
 	"nystavision/internal/i18n"
@@ -188,12 +189,12 @@ func (cp *CameraPanel) buildPTZOverlay() *fyne.Container {
 		}
 	}
 
-	btnUp := NewPTZButton("▲", onDir(0, 1, 0), onStop)
-	btnDown := NewPTZButton("▼", onDir(0, -1, 0), onStop)
-	btnLeft := NewPTZButton("◀", onDir(-1, 0, 0), onStop)
-	btnRight := NewPTZButton("▶", onDir(1, 0, 0), onStop)
-	btnZoomIn := NewPTZButton("+", onDir(0, 0, 1), onStop)
-	btnZoomOut := NewPTZButton("-", onDir(0, 0, -1), onStop)
+	btnUp := NewPTZButton(theme.MoveUpIcon(), onDir(0, 1, 0), onStop)
+	btnDown := NewPTZButton(theme.MoveDownIcon(), onDir(0, -1, 0), onStop)
+	btnLeft := NewPTZButton(theme.NavigateBackIcon(), onDir(-1, 0, 0), onStop)
+	btnRight := NewPTZButton(theme.NavigateNextIcon(), onDir(1, 0, 0), onStop)
+	btnZoomIn := NewPTZButton(theme.ZoomInIcon(), onDir(0, 0, 1), onStop)
+	btnZoomOut := NewPTZButton(theme.ZoomOutIcon(), onDir(0, 0, -1), onStop)
 
 	directionGrid := container.NewGridWithColumns(3,
 		layout.NewSpacer(), btnUp, layout.NewSpacer(),

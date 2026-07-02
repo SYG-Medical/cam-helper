@@ -132,7 +132,7 @@ func NewMultiManager(cfg *config.Config, cfgPath string, logger *logging.Logger)
 
 	// Always start all enabled RTSP streams immediately in the background
 	for _, cam := range cfg.Cameras {
-		if cam.Enabled && cam.Type == "rtsp" && cam.RTSPURL != "" {
+		if cam.Enabled && cam.Type == "rtsp" && (cam.RTSPURL != "" || cam.ONVIFAddress != "") {
 			mgr := mm.streams[cam.ID]
 			go func(c config.CameraSource, m *Manager) {
 				if err := m.Start(); err != nil {
@@ -169,7 +169,7 @@ func (mm *MultiManager) AddCamera(cam config.CameraSource) error {
 	_ = config.Save(*mm.cfg, mm.cfgPath)
 
 	// Auto-start if source is configured
-	if cam.Enabled && ((cam.Type == "rtsp" && cam.RTSPURL != "") || (cam.Type == "webcam" && cam.Device != "")) {
+	if cam.Enabled && ((cam.Type == "rtsp" && (cam.RTSPURL != "" || cam.ONVIFAddress != "")) || (cam.Type == "webcam" && cam.Device != "")) {
 		go func() {
 			if err := mgr.Start(); err != nil {
 				mm.logger.Printf("Failed to auto-start camera %q: %v", cam.Name, err)

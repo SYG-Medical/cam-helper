@@ -45,6 +45,12 @@ type CameraSource struct {
 	DevicePath  string `json:"device_path,omitempty"`
 	Enabled     bool   `json:"enabled"`
 
+	// ONVIF & PTZ fields
+	ONVIFAddress  string  `json:"onvif_address,omitempty"`  // e.g., "192.168.1.100:80" or "http://192.168.1.100/onvif/device_service"
+	ONVIFUsername string  `json:"onvif_username,omitempty"` // optional username if not in ONVIF URL
+	ONVIFPassword string  `json:"onvif_password,omitempty"` // optional password if not in ONVIF URL
+	PTZSpeed      float64 `json:"ptz_speed,omitempty"`      // 0.0-1.0 (default: 0.3)
+
 	// Camera role for medical recording
 	CameraRole string `json:"camera_role,omitempty"` // "environment" or "glasses"
 	EyeSide    string `json:"eye_side,omitempty"`    // "right", "left", or "both" (only for glasses)
