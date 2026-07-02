@@ -9,6 +9,8 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/layout"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
 	"nystavision/internal/i18n"
@@ -16,14 +18,14 @@ import (
 
 // Brand colors matching the SYG Medical theme.
 var (
-	panelDarkSurface  = color.NRGBA{R: 12, G: 15, B: 19, A: 255}   // Deep blackish-gray (#0C0F13)
-	panelCardSurface  = color.NRGBA{R: 22, G: 27, B: 34, A: 255}   // Dark card surface (#161B22)
+	panelDarkSurface  = color.NRGBA{R: 12, G: 15, B: 19, A: 255}    // Deep blackish-gray (#0C0F13)
+	panelCardSurface  = color.NRGBA{R: 22, G: 27, B: 34, A: 255}    // Dark card surface (#161B22)
 	panelTextPrimary  = color.NRGBA{R: 236, G: 240, B: 241, A: 255} // #ECF0F1
 	panelMedicalBlue  = color.NRGBA{R: 46, G: 134, B: 193, A: 255}  // #2E86C1
 	panelFreshGreen   = color.NRGBA{R: 39, G: 174, B: 96, A: 255}   // #27AE60
 	panelAmberWarning = color.NRGBA{R: 243, G: 156, B: 18, A: 255}  // #F39C12
 	panelRedCritical  = color.NRGBA{R: 231, G: 76, B: 60, A: 255}   // #E74C3C
-	panelOverlayColor = color.NRGBA{R: 12, G: 15, B: 19, A: 180}   // Dark semi-transparent overlay
+	panelOverlayColor = color.NRGBA{R: 12, G: 15, B: 19, A: 180}    // Dark semi-transparent overlay
 )
 
 // CameraPanel represents a single camera view in the grid.
@@ -46,8 +48,13 @@ type CameraPanel struct {
 	panelBg          *canvas.Rectangle
 	content          *fyne.Container
 
+	ptzOverlay *fyne.Container
+	ptzBg      *canvas.Rectangle
+
 	mu      sync.Mutex
 	rgbaImg *image.RGBA
+	ptzMove func(pan, tilt, zoom float64)
+	ptzStop func()
 
 	onSelect     func(cameraID string)
 	onRightClick func(cameraID string, pe *fyne.PointEvent)
@@ -121,7 +128,11 @@ func NewCameraPanel(cameraID, cameraName string, onSelect func(string), onRightC
 	cp.panelBg = canvas.NewRectangle(panelCardSurface)
 	cp.panelBg.CornerRadius = 8
 
-	// Stack containing image, text overlay, stopped overlay, and selection border
+	// PTZ (pan/tilt/zoom) directional pad, hidden until SetPTZControls(true, ...) is called
+	cp.ptzOverlay = cp.buildPTZOverlay()
+	cp.ptzOverlay.Hide()
+
+	// Stack containing image, text overlay, stopped overlay, selection border, and PTZ controls
 	previewStack := container.NewStack(
 		cp.img,
 		cp.stoppedContainer,
@@ -129,6 +140,7 @@ func NewCameraPanel(cameraID, cameraName string, onSelect func(string), onRightC
 			cp.overlay,
 		),
 		cp.selectionRect,
+		cp.ptzOverlay,
 	)
 
 	// Dropdown selector
@@ -151,6 +163,78 @@ func NewCameraPanel(cameraID, cameraName string, onSelect func(string), onRightC
 
 	cp.ExtendBaseWidget(cp)
 	return cp
+}
+
+// buildPTZOverlay builds the pan/tilt/zoom directional pad shown in the
+// bottom-right corner of the preview for cameras that support PTZ.
+// Direction values passed to onDirection are in [-1, 0, 1]; the caller
+// (SetPTZControls) scales them by the configured PTZ speed.
+func (cp *CameraPanel) buildPTZOverlay() *fyne.Container {
+	onDir := func(pan, tilt, zoom float64) func() {
+		return func() {
+			cp.mu.Lock()
+			move := cp.ptzMove
+			cp.mu.Unlock()
+			if move != nil {
+				move(pan, tilt, zoom)
+			}
+		}
+	}
+	onStop := func() {
+		cp.mu.Lock()
+		stop := cp.ptzStop
+		cp.mu.Unlock()
+		if stop != nil {
+			stop()
+		}
+	}
+
+	btnUp := NewPTZButton(theme.MoveUpIcon(), onDir(0, 1, 0), onStop)
+	btnDown := NewPTZButton(theme.MoveDownIcon(), onDir(0, -1, 0), onStop)
+	btnLeft := NewPTZButton(theme.NavigateBackIcon(), onDir(-1, 0, 0), onStop)
+	btnRight := NewPTZButton(theme.NavigateNextIcon(), onDir(1, 0, 0), onStop)
+	btnZoomIn := NewPTZButton(theme.ZoomInIcon(), onDir(0, 0, 1), onStop)
+	btnZoomOut := NewPTZButton(theme.ZoomOutIcon(), onDir(0, 0, -1), onStop)
+
+	directionGrid := container.NewGridWithColumns(3,
+		layout.NewSpacer(), btnUp, layout.NewSpacer(),
+		btnLeft, layout.NewSpacer(), btnRight,
+		layout.NewSpacer(), btnDown, layout.NewSpacer(),
+	)
+	zoomGroup := container.NewHBox(btnZoomIn, btnZoomOut)
+
+	cp.ptzBg = canvas.NewRectangle(panelOverlayColor)
+	cp.ptzBg.CornerRadius = 6
+	card := container.NewStack(
+		cp.ptzBg,
+		container.NewPadded(container.NewVBox(
+			directionGrid,
+			container.NewCenter(zoomGroup),
+		)),
+	)
+
+	// Anchor the card to the bottom-right corner of the preview area.
+	rightAligned := container.NewVBox(layout.NewSpacer(), card)
+	return container.NewBorder(nil, nil, nil, rightAligned)
+}
+
+// SetPTZControls shows or hides the PTZ overlay and wires its movement
+// callbacks. onMove receives normalized pan/tilt/zoom direction values in
+// [-1, 0, 1] on button press; onStop is called on release.
+func (cp *CameraPanel) SetPTZControls(enabled bool, onMove func(pan, tilt, zoom float64), onStop func()) {
+	cp.mu.Lock()
+	cp.ptzMove = onMove
+	cp.ptzStop = onStop
+	cp.mu.Unlock()
+
+	fyne.Do(func() {
+		if enabled {
+			cp.ptzOverlay.Show()
+		} else {
+			cp.ptzOverlay.Hide()
+		}
+		cp.ptzOverlay.Refresh()
+	})
 }
 
 // CreateRenderer implements fyne.Widget.

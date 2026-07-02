@@ -252,6 +252,35 @@ func (a *App) setupFrameCallbacks() {
 	}
 }
 
+// defaultPTZSpeed is used when a camera's configured PTZSpeed is unset or invalid.
+// Kept low as a safe default for medical device hardware.
+const defaultPTZSpeed = 0.3
+
+// updatePanelPTZControls shows/hides the panel's PTZ overlay based on whether
+// the camera's stream currently reports PTZ support, and wires its direction
+// buttons to the camera's ONVIF-backed manager.
+func (a *App) updatePanelPTZControls(cameraID string, panel *ui.CameraPanel) {
+	mgr := a.multiManager.GetManager(cameraID)
+	if mgr == nil || !mgr.HasPTZ() {
+		panel.SetPTZControls(false, nil, nil)
+		return
+	}
+
+	speed := defaultPTZSpeed
+	for _, cam := range a.cfg.Cameras {
+		if cam.ID == cameraID && cam.PTZSpeed > 0 {
+			speed = cam.PTZSpeed
+			break
+		}
+	}
+
+	panel.SetPTZControls(true, func(pan, tilt, zoom float64) {
+		mgr.TriggerPTZ(pan*speed, tilt*speed, zoom*speed)
+	}, func() {
+		mgr.TriggerPTZStop()
+	})
+}
+
 func (a *App) selectCamera(cameraID string) {
 	a.selectedCamera = cameraID
 

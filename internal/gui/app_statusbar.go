@@ -59,6 +59,7 @@ func (a *App) statusLoop() {
 				running = false
 			}
 			panel.SetStatus(running, state.LastError)
+			a.updatePanelPTZControls(camID, panel)
 
 			// Check for USB bandwidth error (exit status 228, No space left on device, or ENOSPC)
 			if state.LastError != "" && (strings.Contains(state.LastError, "exit status 228") ||

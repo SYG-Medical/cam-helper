@@ -67,6 +67,8 @@ type Manager struct {
 
 	enableHTTPServer bool // whether this manager should start the HTTP MJPEG server
 
+	onvifClient *ONVIFClient // ONVIF client for this camera stream
+
 	// Per-camera recording state. The camera input remains owned by this single
 	// FFmpeg process; recording is added as a second compressed output.
 	recordSession      *RecordingSession
@@ -135,7 +137,7 @@ func (m *Manager) Start() error {
 	// Validate source
 	switch m.cam.Type {
 	case "rtsp":
-		if strings.TrimSpace(m.cam.RTSPURL) == "" {
+		if strings.TrimSpace(m.cam.RTSPURL) == "" && strings.TrimSpace(m.cam.ONVIFAddress) == "" {
 			return fmt.Errorf("IP URL is empty for camera %q", m.cam.Name)
 		}
 	case "webcam":
@@ -354,10 +356,42 @@ func (m *Manager) supervise(ctx context.Context) {
 func (m *Manager) preparePipeline(ctx context.Context) (*exec.Cmd, error) {
 	m.mu.Lock()
 	isWebcam := m.cam.Type == "webcam"
+	onvifAddr := m.cam.ONVIFAddress
+	onvifUser := m.cam.ONVIFUsername
+	onvifPass := m.cam.ONVIFPassword
+	rtspURL := m.cam.RTSPURL
 	m.mu.Unlock()
 
 	if isWebcam {
 		m.applyBestCapability(ctx)
+	} else if onvifAddr != "" {
+		m.logger.Printf("[%s] Resolving RTSP URL via ONVIF: %s", m.cam.Name, onvifAddr)
+		client, err := NewONVIFClient(onvifAddr, onvifUser, onvifPass)
+		if err != nil {
+			m.logger.Printf("[%s] ONVIF client initialization failed: %v", m.cam.Name, err)
+		} else {
+			uri, err := client.ResolveProfileAndStreamURI()
+			if err != nil {
+				m.logger.Printf("[%s] ONVIF RTSP URL resolution error: %v", m.cam.Name, err)
+			} else {
+				m.logger.Printf("[%s] ONVIF RTSP URL successfully resolved: %s", m.cam.Name, uri)
+				m.mu.Lock()
+				m.cam.RTSPURL = uri
+				m.onvifClient = client
+				m.mu.Unlock()
+			}
+		}
+	} else if rtspURL != "" {
+		m.logger.Printf("[%s] ONVIF address not configured. Attempting to auto-detect from RTSP URL...", m.cam.Name)
+		client, err := AutoDetectONVIF(rtspURL)
+		if err != nil {
+			m.logger.Printf("[%s] ONVIF auto-detection failed (standard RTSP stream will run): %v", m.cam.Name, err)
+		} else {
+			m.logger.Printf("[%s] ONVIF auto-detected successfully. PTZ controls enabled.", m.cam.Name)
+			m.mu.Lock()
+			m.onvifClient = client
+			m.mu.Unlock()
+		}
 	}
 
 	ffmpegCmd, err := m.buildFFmpegCommand(ctx)
@@ -1284,4 +1318,46 @@ func selectBestCapability(caps []CameraCapability, targetW, targetH, targetFPS i
 	}
 
 	return best
+}
+
+// TriggerPTZ moves the camera continuously in a non-blocking goroutine.
+func (m *Manager) TriggerPTZ(pan, tilt, zoom float64) {
+	m.mu.Lock()
+	client := m.onvifClient
+	m.mu.Unlock()
+
+	if client != nil {
+		go func() {
+			if err := client.ContinuousMove(pan, tilt, zoom); err != nil {
+				m.logger.Printf("[%s] PTZ continuous move error: %v", m.cam.Name, err)
+			}
+		}()
+	}
+}
+
+// TriggerPTZStop stops camera movement in a non-blocking goroutine.
+func (m *Manager) TriggerPTZStop() {
+	m.mu.Lock()
+	client := m.onvifClient
+	m.mu.Unlock()
+
+	if client != nil {
+		go func() {
+			if err := client.Stop(); err != nil {
+				m.logger.Printf("[%s] PTZ stop error: %v", m.cam.Name, err)
+			}
+		}()
+	}
+}
+
+// HasPTZ returns true if the camera is configured with ONVIF and has PTZ support.
+func (m *Manager) HasPTZ() bool {
+	m.mu.Lock()
+	client := m.onvifClient
+	m.mu.Unlock()
+
+	if client != nil {
+		return client.HasPTZ()
+	}
+	return false
 }
