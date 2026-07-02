@@ -426,30 +426,57 @@ func (a *App) stopRecording() {
 			return
 		}
 
-		// Open the drawer to get patient info. The drawer's "Save" button will trigger postProcessRecording.
-		a.showPatientInfoDrawerAfterRecording(session, compositeRec)
+		// Show a progress indicator while stopping the recording pipeline
+		content := container.NewVBox(widget.NewLabel(i18n.T("msg_please_wait")), widget.NewProgressBarInfinite())
+		progress := a.NewToastProgress("Kayıt Sonlandırılıyor...", content)
+		progress.Show()
+
+		go func() {
+			var compositeFile string
+			if compositeRec != nil {
+				_ = compositeRec.Stop()
+				compositeFile = compositeRec.OutFile()
+			}
+			a.multiManager.StopRecording(session)
+
+			fyne.Do(func() {
+				progress.Hide()
+				a.mu.Lock()
+				a.pendingRecordings = append(a.pendingRecordings, stream.PendingRecording{
+					SessionSnapshot: session.Snapshot(),
+					CompositeFile:   compositeFile,
+					Timestamp:       session.StartedAt,
+				})
+				_ = stream.SavePendingQueue(a.cfg.RecordingsDir, a.pendingRecordings)
+				visible := a.recordingsDrawerVisible
+				a.mu.Unlock()
+
+				a.updateRecordingsBadge()
+
+				if !visible {
+					a.showNextPendingRecording()
+				}
+			})
+		}()
 	})
 }
 
-func (a *App) postProcessRecording(session *stream.RecordingSession, compositeRec *stream.CompositeRecorder, tempDir, actualPatientDir string, note string) {
+func (a *App) postProcessRecording(pending stream.PendingRecording, actualPatientDir string, note string) {
+	actualTempDir := filepath.Dir(pending.SessionSnapshot.TempDir)
+	compositeFile := pending.CompositeFile
+	
 	// ---------------------------------------------------------------
 	// COMPOSITE MODE
 	// ---------------------------------------------------------------
-	if compositeRec != nil {
+	if pending.CompositeFile != "" {
 		content := container.NewVBox(widget.NewLabel(i18n.T("msg_please_wait")), widget.NewProgressBarInfinite())
 		progress := a.NewToastProgress(i18n.T("msg_please_wait"), content)
 		progress.Show()
 
 		go func() {
-			// 1. Finalize the composite video file.
-			err := compositeRec.Stop()
-			// 2. Finalize session timestamps.
-			a.multiManager.StopRecording(session)
-
-			compositeFile := compositeRec.OutFile()
 			// Move temporary recorded files to final directory if needed
-			if tempDir != "" && tempDir != actualPatientDir {
-				stream.MoveTempToFinal(tempDir, actualPatientDir)
+			if actualTempDir != "" && actualTempDir != actualPatientDir {
+				stream.MoveTempToFinal(actualTempDir, actualPatientDir)
 			}
 
 			// compositeFile is originally inside tempDir, but stream.MoveTempToFinal moves everything 
@@ -460,11 +487,6 @@ func (a *App) postProcessRecording(session *stream.RecordingSession, compositeRe
 
 			fyne.Do(func() {
 				progress.Hide()
-
-				if err != nil {
-					dialog.ShowError(fmt.Errorf("Genel video kaydedilemedi: %v", err), a.window)
-					return
-				}
 
 				// Create a new Maneuver for this recording session and append it
 				maneuver := stream.Maneuver{
@@ -479,11 +501,16 @@ func (a *App) postProcessRecording(session *stream.RecordingSession, compositeRe
 				_ = stream.AppendManeuver(actualPatientDir, maneuver)
 
 				if a.jobQueue != nil {
-					_ = a.jobQueue.EnqueueComposite(session, actualPatientDir, compositeFile)
+					_ = a.jobQueue.EnqueueComposite(pending.SessionSnapshot, actualPatientDir, compositeFile)
 				}
 
 				a.sendOSNotification(i18n.T("record_done_title"), i18n.T("record_saved_notification"))
-				a.showRecordingsDrawerWithHighlight(actualPatientDir)
+				a.mu.Lock()
+				hasPending := len(a.pendingRecordings) > 0
+				a.mu.Unlock()
+				if !hasPending {
+					a.showRecordingsDrawerWithHighlight(actualPatientDir)
+				}
 			})
 		}()
 		return
@@ -497,10 +524,8 @@ func (a *App) postProcessRecording(session *stream.RecordingSession, compositeRe
 	progress.Show()
 
 	go func() {
-		a.multiManager.StopRecording(session)
-
-		if tempDir != "" && tempDir != actualPatientDir {
-			stream.MoveTempToFinal(tempDir, actualPatientDir)
+		if actualTempDir != "" && actualTempDir != actualPatientDir {
+			stream.MoveTempToFinal(actualTempDir, actualPatientDir)
 		}
 
 		fyne.Do(func() {
@@ -520,8 +545,18 @@ func (a *App) postProcessRecording(session *stream.RecordingSession, compositeRe
 				done := make(chan struct{})
 
 				go func() {
-					snap := session.Snapshot()
-					cams := session.CameraList()
+					snap := pending.SessionSnapshot
+					// build camera list from snapshot
+					cams := make([]stream.CameraRecording, 0, len(snap.Cameras))
+					for _, cam := range snap.Cameras {
+						cams = append(cams, *cam)
+					}
+					// simple sort
+					for i := 1; i < len(cams); i++ {
+						for j := i; j > 0 && cams[j].Order < cams[j-1].Order; j-- {
+							cams[j], cams[j-1] = cams[j-1], cams[j]
+						}
+					}
 					result = a.postProc.ProcessGeneralOnly(ctx, snap, cams, actualPatientDir, progressCh, true)
 					close(done)
 				}()
@@ -538,7 +573,7 @@ func (a *App) postProcessRecording(session *stream.RecordingSession, compositeRe
 				<-done
 
 				if result.Err == nil && a.jobQueue != nil {
-					_ = a.jobQueue.Enqueue(session, actualPatientDir)
+					_ = a.jobQueue.Enqueue(pending.SessionSnapshot, actualPatientDir)
 				}
 
 				if result.Err == nil && len(result.Files) > 0 {
@@ -565,7 +600,12 @@ func (a *App) postProcessRecording(session *stream.RecordingSession, compositeRe
 					}
 
 					a.sendOSNotification(i18n.T("record_done_title"), i18n.T("record_saved_notification"))
-					a.showRecordingsDrawerWithHighlight(actualPatientDir)
+					a.mu.Lock()
+					hasPending := len(a.pendingRecordings) > 0
+					a.mu.Unlock()
+					if !hasPending {
+						a.showRecordingsDrawerWithHighlight(actualPatientDir)
+					}
 				})
 			}()
 		})

@@ -18,7 +18,17 @@ import (
 	"nystavision/internal/stream"
 )
 
-func (a *App) showPatientInfoDrawerAfterRecording(session *stream.RecordingSession, compositeRec *stream.CompositeRecorder) {
+func (a *App) showNextPendingRecording() {
+	a.mu.Lock()
+	if len(a.pendingRecordings) == 0 {
+		a.mu.Unlock()
+		a.showRecordingsListInDrawer()
+		return
+	}
+	pending := a.pendingRecordings[0]
+	pendingCount := len(a.pendingRecordings)
+	a.mu.Unlock()
+
 	nameEntry := widget.NewEntry()
 	nameEntry.SetPlaceHolder(i18n.T("record_patient_placeholder"))
 
@@ -73,23 +83,38 @@ func (a *App) showPatientInfoDrawerAfterRecording(session *stream.RecordingSessi
 			_ = stream.SavePatientInfo(finalPatientDir, info)
 		}
 
-		actualTempDir := filepath.Dir(session.TempDir)
+		// Pop from queue
+		a.mu.Lock()
+		if len(a.pendingRecordings) > 0 {
+			a.pendingRecordings = a.pendingRecordings[1:]
+			_ = stream.SavePendingQueue(a.cfg.RecordingsDir, a.pendingRecordings)
+		}
+		a.mu.Unlock()
+		a.updateRecordingsBadge()
 
-		// Restore list view in right drawer
-		a.showRecordingsListInDrawer()
-
-		a.postProcessRecording(session, compositeRec, actualTempDir, finalPatientDir, note)
+		a.postProcessRecording(pending, finalPatientDir, note)
+		
+		// Immediately process next if available, or go back to list
+		a.showNextPendingRecording()
 	})
 
 	saveBtn.Importance = widget.HighImportance
 
-	// Form Title
-	titleLabel := canvas.NewText("Hasta Bilgileri", colorTextPrimary)
+	// Form Title with Sequence/Count
+	titleText := "Hasta Bilgileri"
+	if pendingCount > 1 {
+		titleText = fmt.Sprintf("Hasta Bilgileri (Bekleyen: %d)", pendingCount)
+	}
+	titleLabel := canvas.NewText(titleText, colorTextPrimary)
 	titleLabel.TextSize = 15
 	titleLabel.TextStyle = fyne.TextStyle{Bold: true}
 
+	dateStr := pending.Timestamp.Format("02.01.2006 15:04:05")
+	dateLabel := canvas.NewText(fmt.Sprintf("Kayıt Tarihi: %s", dateStr), colorTextSecondary)
+	dateLabel.TextSize = 12
+
 	formHeader := container.NewVBox(
-		container.NewPadded(titleLabel),
+		container.NewPadded(container.NewVBox(titleLabel, dateLabel)),
 		widget.NewSeparator(),
 	)
 

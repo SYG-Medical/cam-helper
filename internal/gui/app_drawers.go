@@ -487,12 +487,17 @@ func (a *App) toggleRecordingsDrawer() {
 	a.mu.Lock()
 	a.recordingsDrawerVisible = !a.recordingsDrawerVisible
 	visible := a.recordingsDrawerVisible
+	hasPending := len(a.pendingRecordings) > 0
 	a.mu.Unlock()
 
 	if visible {
-		a.showRecordingsListInDrawer()
-		go a.refreshRecordingsList()
-		a.recordingsDrawerPanel.Show()
+		if hasPending {
+			a.showNextPendingRecording()
+		} else {
+			a.showRecordingsListInDrawer()
+			go a.refreshRecordingsList()
+			a.recordingsDrawerPanel.Show()
+		}
 	} else {
 		a.recordingsDrawerPanel.Hide()
 	}

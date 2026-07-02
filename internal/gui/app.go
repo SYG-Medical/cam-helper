@@ -77,6 +77,9 @@ type App struct {
 	// Composite recording
 	compositeRecorder *stream.CompositeRecorder
 
+	// Pending recordings queue
+	pendingRecordings []stream.PendingRecording
+
 	// Disk space live monitoring
 	diskBanner      *fyne.Container
 	diskBannerBg    *canvas.Rectangle
@@ -108,6 +111,9 @@ type App struct {
 	recordingsDrawerVisible bool
 	highlightedDir          string
 	recordingsBtn           *widget.Button
+	recordingsBadge         *fyne.Container
+	recordingsBadgeBg       *canvas.Rectangle
+	recordingsBadgeText     *canvas.Text
 
 	// Views containers for layout draw swapping
 	recordingsDrawerContent *fyne.Container
@@ -284,6 +290,19 @@ func (a *App) saveWindowLayoutToConfig() {
 }
 
 func (a *App) handleClose() {
+	a.mu.Lock()
+	pendingCount := len(a.pendingRecordings)
+	a.mu.Unlock()
+
+	if pendingCount > 0 {
+		dialog.ShowInformation(
+			i18n.T("title_app"), 
+			"Lütfen uygulamayı kapatmadan önce bekleyen kayıtlarınızı kaydedin.", 
+			a.window,
+		)
+		return
+	}
+
 	bgBtn := widget.NewButtonWithIcon(i18n.T("close_btn_background"), theme.ComputerIcon(), nil)
 	bgBtn.Importance = widget.HighImportance
 	quitBtn := widget.NewButtonWithIcon(i18n.T("close_btn_quit"), theme.CancelIcon(), nil)
@@ -412,8 +431,12 @@ func (a *App) Run() error {
 		a.cameraPanels = make(map[string]*ui.CameraPanel)
 		a.cameraOrder = getCameraOrder(cfg.Cameras)
 		a.patientCache.SetFilePath(filepath.Join(filepath.Dir(cfgPath), "patient_cache.json"))
+		if pending, err := stream.LoadPendingQueue(cfg.RecordingsDir); err == nil && len(pending) > 0 {
+			a.pendingRecordings = pending
+		}
 		a.mu.Unlock()
 
+		a.updateRecordingsBadge()
 		a.translateCameraNames()
 
 		if jq != nil {

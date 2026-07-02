@@ -109,8 +109,7 @@ func (jq *JobQueue) Stop() {
 }
 
 // Enqueue adds a new standard (per-camera) processing job.
-func (jq *JobQueue) Enqueue(session *RecordingSession, patientDir string) error {
-	snap := session.Snapshot()
+func (jq *JobQueue) Enqueue(snap RecordingSessionSnapshot, patientDir string) error {
 	snapData, err := MarshalSnapshot(snap)
 	if err != nil {
 		return fmt.Errorf("marshal session: %w", err)
@@ -139,8 +138,7 @@ func (jq *JobQueue) Enqueue(session *RecordingSession, patientDir string) error 
 
 // EnqueueComposite adds a new composite decompose job. The job will crop each
 // camera cell out of compositeFile and produce individual camera videos.
-func (jq *JobQueue) EnqueueComposite(session *RecordingSession, patientDir, compositeFile string) error {
-	snap := session.Snapshot()
+func (jq *JobQueue) EnqueueComposite(snap RecordingSessionSnapshot, patientDir, compositeFile string) error {
 	snapData, err := MarshalSnapshot(snap)
 	if err != nil {
 		return fmt.Errorf("marshal session: %w", err)

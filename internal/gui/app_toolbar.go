@@ -2,9 +2,11 @@ package gui
 
 import (
 	"fmt"
+	"image/color"
 	"time"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
@@ -55,6 +57,23 @@ func (a *App) buildToolbar() *fyne.Container {
 		a.toggleRecordingsDrawer()
 	})
 
+	// Badge for pending recordings
+	a.recordingsBadgeBg = canvas.NewRectangle(color.NRGBA{R: 231, G: 76, B: 60, A: 255}) // Red
+	a.recordingsBadgeBg.CornerRadius = 8
+	a.recordingsBadgeText = canvas.NewText("0", color.White)
+	a.recordingsBadgeText.TextSize = 10
+	a.recordingsBadgeText.TextStyle = fyne.TextStyle{Bold: true}
+	a.recordingsBadgeText.Alignment = fyne.TextAlignCenter
+	
+	badgePadded := container.NewPadded(a.recordingsBadgeText)
+	a.recordingsBadge = container.NewStack(a.recordingsBadgeBg, badgePadded)
+	a.recordingsBadge.Hide()
+
+	badgeOverlay := container.NewVBox(
+		container.NewHBox(layout.NewSpacer(), a.recordingsBadge),
+	)
+	recordingsBtnWithBadge := container.NewStack(a.recordingsBtn, badgeOverlay)
+
 	// Help/Tutorial button
 	helpBtn := widget.NewButtonWithIcon("", theme.QuestionIcon(), func() {
 		a.showAboutDialog()
@@ -63,7 +82,7 @@ func (a *App) buildToolbar() *fyne.Container {
 	// Layout: [Sahneler] | [+ Ekle] [- Sil] | [▶ Tümünü Başlat] [⏺ Kayıt] | [⚙] [?] | [Kayıtlarım]
 	leftGroup := container.NewHBox(layoutsBtn, widget.NewSeparator(), a.addBtn, a.removeBtn)
 	middleGroup := container.NewHBox(a.startStopAllBtn, widget.NewSeparator(), a.recordBtn)
-	rightGroup := container.NewHBox(widget.NewSeparator(), settingsBtn, helpBtn, widget.NewSeparator(), a.recordingsBtn)
+	rightGroup := container.NewHBox(widget.NewSeparator(), settingsBtn, helpBtn, widget.NewSeparator(), recordingsBtnWithBadge)
 
 	borderLayout := layout.NewBorderLayout(nil, nil, leftGroup, rightGroup)
 	overrideLayout := ui.NewMinSizeOverridingLayout(borderLayout, fyne.NewSize(100, 0))
@@ -247,6 +266,25 @@ func (a *App) updateToolbarLabels() {
 		}
 		if a.recordingsBtn != nil {
 			a.recordingsBtn.Refresh()
+		}
+	})
+}
+
+func (a *App) updateRecordingsBadge() {
+	if a.recordingsBadge == nil {
+		return
+	}
+	a.mu.Lock()
+	count := len(a.pendingRecordings)
+	a.mu.Unlock()
+
+	fyne.Do(func() {
+		if count > 0 {
+			a.recordingsBadgeText.Text = fmt.Sprintf("%d", count)
+			a.recordingsBadgeText.Refresh()
+			a.recordingsBadge.Show()
+		} else {
+			a.recordingsBadge.Hide()
 		}
 	})
 }
